@@ -1,0 +1,63 @@
+# AskData —— macOS (Apple Silicon) 可用依赖清单
+#
+# 为什么不用仓库自带的 requirements.txt：
+#   那份是作者在 Linux GPU 服务器上 pip freeze 导出的完整快照，包含
+#   cuda-bindings / nvidia-* / triton / torch 等 CUDA 依赖，
+#   在 macOS 上执行会直接失败：
+#     ERROR: Could not find a version that satisfies the requirement cuda-bindings==13.2.0
+#   而这些包没有任何一行项目代码真正 import 过。
+#
+# 安装：
+#   pip install -r requirements-mac.txt
+# 验证：
+#   python env_test.py
+
+
+# ============================================================
+# 核心链路（必需）
+# ============================================================
+# 整条 Text2SQL 链路只依赖 numpy + Python 标准库：
+#   - urllib.request  负责调用百炼 HTTP 接口
+#   - sqlite3         负责 MCP 执行器查询
+#   - numpy           负责向量召回的相似度计算
+numpy==2.2.6
+
+
+# ============================================================
+# Schema 索引模块 schema_indexing（可选）
+# ============================================================
+# 只有运行 `python -m schema_indexing.build_index_demo` 才需要。
+# 端到端 Demo、记忆 Demo、单元测试都不需要这三个包。
+#
+# 版本必须锁死，原因：
+#   1) pymilvus 3.x + milvus-lite 3.x 会在建表关系 Collection 时报
+#        MilvusException: (code=6, message=schema has no vector field ...)
+#      因为 milvus_client.py 里的 relation_collection 只有 VARCHAR 字段、
+#      没有向量字段，新版 Milvus 不再允许这种表结构。
+#   2) milvus-lite 2.5.1 仍在 import pkg_resources，
+#      setuptools >= 81 已经移除该模块，会报 ModuleNotFoundError。
+pymilvus==2.5.18
+milvus-lite==2.5.1
+setuptools==80.10.2
+
+
+# ============================================================
+# 本地向量 / 精排模型（走 DeepSeek 时必需）
+# ============================================================
+# DeepSeek 只提供 Chat 接口，没有 Embedding、也没有 Rerank 服务。
+# 所以两阶段检索的这两路改用本地开源模型，完全离线、零调用费用：
+#   向量召回  BAAI/bge-small-zh-v1.5   约 95MB   512 维
+#   精排      BAAI/bge-reranker-base   约 1.1GB  Cross-Encoder
+#
+# 首次运行会自动从 HuggingFace 下载模型并缓存到 ~/.cache/huggingface。
+# 启用方式（不设则保持 Mock 行为，Demo 秒开、不下载模型）：
+#   export ASKDATA_LOCAL_MODELS=1
+torch
+sentence-transformers
+
+
+# ============================================================
+# 纯可选
+# ============================================================
+# scikit-learn 只在 env_test.py 里被检测，项目本体没有任何一处 import。
+# scikit-learn
