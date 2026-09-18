@@ -311,3 +311,57 @@ class EvalErrorClassificationTestCase(unittest.TestCase):
         self.assertEqual(aborted.completed, 23)
         self.assertEqual(aborted.total, 50)
         self.assertEqual(aborted.consecutive, 3)
+
+
+class MissingSchemaGuardTestCase(unittest.TestCase):
+    """
+    回归守卫：CoT 判定 Schema 缺失时，必须阻断 SQL 生成。
+
+    光靠 Prompt 约束不住。实测抓到过 CoT 明确写了"缺少发货时间"，
+    下游照样用 finish_time - pay_time 算出 93.6 小时交上去——
+    嘴上承认、手上照编，比闷头编更有欺骗性，因为它看起来还挺严谨。
+    """
+
+    def step(self, database="ecommerce_db", output_target="x.y", processing_objects="a.b"):
+        from sql_generation import CotStep
+
+        return CotStep(
+            database=database,
+            processing_objects=processing_objects,
+            operation_instruction="先筛选再关联",
+            output_target=output_target,
+        )
+
+    def guard(self, cot_step) -> bool:
+        from askdata_pipeline.text2sql_pipeline import _is_missing_schema_step
+
+        return _is_missing_schema_step(cot_step)
+
+    def test_missing_database_is_blocked(self):
+        self.assertTrue(self.guard(self.step(database="缺失")))
+
+    def test_missing_output_target_is_blocked(self):
+        self.assertTrue(
+            self.guard(self.step(output_target="缺失，无法生成明确输出目标"))
+        )
+
+    def test_normal_step_passes_through(self):
+        self.assertFalse(self.guard(self.step()))
+
+    def test_operation_instruction_mentioning_missing_does_not_block(self):
+        """
+        只看数据库和输出目标两项。
+
+        操作指令是自然语言，里面提到"没有"未必代表整体不可答——
+        例如"筛选没有退款记录的订单"就完全是一个正常问题。
+        """
+        from sql_generation import CotStep
+
+        step = CotStep(
+            database="ecommerce_db",
+            processing_objects="fact_order.order_id",
+            operation_instruction="筛选没有退款记录的订单，再统计数量",
+            output_target="订单数量",
+        )
+
+        self.assertFalse(self.guard(step))

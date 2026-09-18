@@ -330,12 +330,22 @@ def judge_unanswerable(result: Any, base: Dict[str, Any]) -> CaseOutcome:
     last = result.step_logs[-1]
     generated_sql = " ".join(last.sql.split())
     execution = last.execution_result
+    rows = execution.get("rows") or []
 
-    if flagged and not execution.get("rows"):
+    # 判据只有一条：有没有给出数字。
+    #
+    # 之前的实现里，只要 CoT 文本出现过"缺失"二字就算通过——
+    # 结果实测抓到最糟的一种组合：CoT 明确说了"Schema 缺少发货时间"，
+    # 然后照样用 finish_time - pay_time 算出 93.6 小时交了上去。
+    # 嘴上承认、手上照编，比闷头编更有欺骗性，因为它看起来还挺严谨。
+    if rows:
         return CaseOutcome(
-            status="pass",
+            status="fabricated",
             generated_sql=generated_sql,
-            detail="CoT 已说明缺失，未给出结果",
+            detail=(
+                f"Schema 支撑不了，却返回了 {execution.get('row_count')} 行结果"
+                + ("（CoT 里虽提到缺失，但仍给出了数字）" if flagged else "")
+            ),
             **base,
         )
 
@@ -347,18 +357,10 @@ def judge_unanswerable(result: Any, base: Dict[str, Any]) -> CaseOutcome:
             **base,
         )
 
-    if flagged:
-        return CaseOutcome(
-            status="pass",
-            generated_sql=generated_sql,
-            detail="CoT 已说明缺失",
-            **base,
-        )
-
     return CaseOutcome(
-        status="fabricated",
+        status="pass",
         generated_sql=generated_sql,
-        detail=f"Schema 支撑不了，却返回了 {execution.get('row_count')} 行结果",
+        detail="未给出结果" + ("，CoT 已说明缺失" if flagged else ""),
         **base,
     )
 

@@ -67,6 +67,12 @@ class Codes:
     QUERY_REWRITE_FAILED = "QUERY_REWRITE_FAILED"
     """指代消解调用失败，已回退为原始 Query。"""
 
+    SCHEMA_RECALL_MISS = "SCHEMA_RECALL_MISS"
+    """CoT 判缺失，但全量 Schema 下可答——说明是检索漏召回，已自动补救。频繁出现说明召回该调。"""
+
+    SCHEMA_INSUFFICIENT = "SCHEMA_INSUFFICIENT"
+    """CoT 判定 Schema 无法支撑该问题，已阻断 SQL 生成。这是正确行为，不是错误。"""
+
     DOMINANT_KEYWORD_RESCUED = "DOMINANT_KEYWORD_RESCUED"
     """字面命中压倒性的字段被精排淘汰，已强制补回。频繁出现说明精排阈值需要调。"""
 

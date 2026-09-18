@@ -438,7 +438,11 @@ def _dimension_business_meta() -> dict:
     return {
         # ---------------- 维度层 ----------------
         "dim_user": {
-            "description": "用户维度表，记录用户的注册信息、所在城市、会员等级和注册渠道，是所有用户画像类分析的基础表。",
+            "description": (
+                "用户维度表，记录用户的注册信息、所在城市、会员等级和注册渠道，"
+                "是所有用户画像类分析的基础表。"
+                "本表不含手机号、邮箱、身份证等联系方式与身份信息。"
+            ),
             "aliases": ["用户表", "用户维度表", "会员表", "客户表"],
             "columns": {
                 "user_id": {
@@ -480,9 +484,14 @@ def _dimension_business_meta() -> dict:
                     "semantic_role": "dimension",
                 },
                 "age_group": {
-                    "description": "用户年龄段分组。",
+                    "description": (
+                        "用户年龄段分组，取值形如 18-24、25-30。"
+                        "注意：这是区间，不是精确年龄；库中没有出生日期，"
+                        "无法计算某个用户具体多少岁，问“具体年龄”应判定为缺失。"
+                    ),
                     "aliases": ["年龄段", "年龄分组", "年龄区间"],
                     "semantic_role": "dimension",
+                    "rerank_text": "字段：dim_user.age_group。含义：年龄段区间。边界：不是精确年龄，库中没有出生日期，无法回答“具体年龄是多少岁”。",
                 },
                 "member_level": {
                     "description": "会员等级，取值为普通会员、银卡会员、金卡会员、钻石会员。",
@@ -528,7 +537,10 @@ def _dimension_business_meta() -> dict:
             },
         },
         "dim_shop": {
-            "description": "店铺维度表，记录店铺名称、店铺类型、主营类目、所在城市和营业状态。",
+            "description": (
+                "店铺维度表，记录店铺名称、店铺类型、主营类目、所在城市和营业状态。"
+                "本表不含员工、人员编制、经营面积等信息。"
+            ),
             "aliases": ["店铺表", "店铺维度表", "商家表"],
             "columns": {
                 "shop_id": {
@@ -574,7 +586,10 @@ def _dimension_business_meta() -> dict:
             },
         },
         "dim_product": {
-            "description": "商品维度表，记录商品名称、所属类目、所属店铺、品牌、标价和成本价。",
+            "description": (
+                "商品维度表，记录商品名称、所属类目、所属店铺、品牌、标价和成本价。"
+                "本表不含库存量、可售数量等库存信息。"
+            ),
             "aliases": ["商品表", "商品维度表", "货品表", "SKU表"],
             "columns": {
                 "product_id": {
@@ -717,9 +732,15 @@ def _fact_business_meta() -> dict:
                     "business_usage": "判断订单是否支付、计算下单到支付的转化时长。",
                 },
                 "finish_time": {
-                    "description": "订单完成时间，即确认收货时间。",
-                    "aliases": ["完成时间", "收货时间", "订单完成时间"],
+                    "description": (
+                        "订单完成时间，即买家确认收货的时间。"
+                        "注意：库中没有发货时间，因此本字段减去 pay_time 得到的是"
+                        "“支付到确认收货”的总时长，包含商家备货时间，"
+                        "不等于物流时效、配送时长或签收时效，不能用来回答这类问题。"
+                    ),
+                    "aliases": ["完成时间", "收货时间", "订单完成时间", "确认收货时间"],
                     "semantic_role": "time",
+                    "rerank_text": "字段：fact_order.finish_time。含义：买家确认收货时间。边界：库中没有发货时间，无法计算物流时效/配送时长/签收时效；问这类问题应判定为 Schema 缺失。",
                 },
             },
         },

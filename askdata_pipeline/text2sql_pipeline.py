@@ -31,6 +31,27 @@ from .query_rewriter import ContextualQueryRewriter
 from .objects import PipelineConfig, PipelineResult, StepExecutionLog
 
 
+# CoT 判定"Schema 支撑不了"时会在四元组里留下的标记
+MISSING_SCHEMA_MARKERS = ("缺失", "无法支撑", "不存在", "未找到", "没有该字段", "不支持")
+
+
+def _is_missing_schema_step(cot_step) -> bool:
+    """
+    判断 CoT 是否已经判定 Schema 支撑不了这个问题。
+
+    只看"数据库"和"输出目标"两项——这两项按约定应该填具体的库名和字段，
+    一旦出现"缺失"字样，说明 CoT 自己已经得出了无法回答的结论。
+    不看"操作指令"，因为那段自然语言里提到"缺失"未必代表整体不可答。
+    """
+    for field_value in (cot_step.database, cot_step.output_target):
+        text = (field_value or "").strip()
+
+        if any(marker in text for marker in MISSING_SCHEMA_MARKERS):
+            return True
+
+    return False
+
+
 class AskDataText2SQLPipeline:
     """
     AskData Text2SQL 端到端流程。
@@ -113,6 +134,34 @@ class AskDataText2SQLPipeline:
             schema_graph=schema_graph,
         )
 
+        # CoT 说"缺失"时，先别急着信。
+        #
+        # 它只看到了检索交给它的那一小块 Schema——"我没看到"和"库里没有"
+        # 是两回事。实测里 "北京用户下了多少单" 被判缺失，理由是
+        # "缺少 dim_user 的城市字段"，而 dim_user.city 明明存在，只是这轮没召回。
+        #
+        # 所以拒答必须建立在完整信息上：把全量 Schema 摆出来重新规划一次，
+        # 只有在看过全部字段之后仍然判缺失，这个拒答才可信。
+        if any(_is_missing_schema_step(step) for step in cot_result.steps):
+            full_graph = self._build_full_schema_graph()
+
+            retry_result = self.cot_planner.plan(
+                user_query=contextual_query,
+                schema_graph=full_graph,
+            )
+
+            if not any(_is_missing_schema_step(step) for step in retry_result.steps):
+                # 全量 Schema 下能答 —— 说明刚才是检索漏了，不是库里没有。
+                # 模型的"缺失"声明因此成了一个高质量的召回失败信号。
+                emit(
+                    Codes.SCHEMA_RECALL_MISS,
+                    "CoT 判缺失但全量 Schema 下可以回答，实为检索漏召回，已用全量 Schema 重规划",
+                    问题=effective_query[:60],
+                )
+                cot_result = retry_result
+                schema_graph = full_graph
+                schema_context = schema_graph.to_prompt_context()
+
         schema_store = LocalSchemaStore.from_schema_graph(schema_graph)
 
         sql_generator = SqlGenerator(
@@ -127,6 +176,19 @@ class AskDataText2SQLPipeline:
         step_logs: List[StepExecutionLog] = []
 
         for cot_step in cot_result.steps:
+            # CoT 判定 Schema 支撑不了，就到此为止，不进 SQL 生成。
+            #
+            # 光靠 Prompt 约束不住：实测抓到过 CoT 明确写了"缺少发货时间"，
+            # 下游照样用 finish_time - pay_time 算出 93.6 小时交上去。
+            # 嘴上承认、手上照编，比闷头编更有欺骗性——它看起来还挺严谨。
+            if _is_missing_schema_step(cot_step):
+                emit(
+                    Codes.SCHEMA_INSUFFICIENT,
+                    "CoT 判定 Schema 无法支撑该问题，已阻断 SQL 生成",
+                    缺失说明=cot_step.processing_objects[:100],
+                )
+                continue
+
             sql_cot_step = CotStep(
                 database=cot_step.database,
                 processing_objects=cot_step.processing_objects,
@@ -203,6 +265,34 @@ class AskDataText2SQLPipeline:
             keyword_extractor=None,
             config=self._build_retrieval_config(),
             sample_size=self.config.sample_size,
+        )
+
+    def _build_full_schema_graph(self):
+        """
+        用库里全部表和字段拼一张完整 SchemaGraph。
+
+        只在复核拒答时使用：81 个字段放进 Prompt 完全放得下，
+        而一个拒答如果建立在残缺信息上，就没有任何可信度。
+        """
+        from collections import defaultdict
+
+        from schema_retrieval.objects import SchemaGraph
+
+        service = self.schema_retrieval_service
+
+        columns_by_table = defaultdict(list)
+        for column in service.columns:
+            columns_by_table[column.table_name].append(column)
+
+        database = ""
+        if service.tables:
+            database = next(iter(service.tables.values())).database
+
+        return SchemaGraph(
+            database=database,
+            tables=dict(service.tables),
+            columns=dict(columns_by_table),
+            relations=list(service.relations),
         )
 
     def _build_retrieval_config(self) -> HybridSchemaRetrievalConfig:
