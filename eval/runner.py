@@ -43,6 +43,73 @@ MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不�
 
 FLOAT_NDIGITS = 2
 
+# 持续性故障：重试毫无意义，环境本身不通
+PERSISTENT_ERROR_PATTERNS = (
+    "nodename nor servname",               # macOS DNS 解析失败
+    "name or service not known",           # Linux DNS 解析失败
+    "temporary failure in name resolution",
+    "connection refused",
+    "no route to host",
+    "network is unreachable",
+    "certificate verify failed",
+    "unauthorized",                        # Key 失效
+    "insufficient balance",                # 余额耗尽
+    "401",
+    "402",
+    "403",
+)
+
+# 瞬时故障：重试有意义
+TRANSIENT_ERROR_PATTERNS = (
+    "timed out",
+    "timeout",
+    "too many requests",
+    "connection reset",
+    "remotedisconnected",
+    "bad gateway",
+    "429",
+    "502",
+    "503",
+    "504",
+)
+
+
+class EvalAborted(RuntimeError):
+    """
+    连续多题因同一类基础设施故障失败，评测中止。
+
+    动机：一次 150 运行的评测跑到一半断网，后面 26 题全部 0.0 秒失败，
+    重试机制空转 162 次，最后仍然吐出一份格式完整的报告——端到端 42%、
+    陷阱题诚实率 0/5、"三次运行波动 0 题"。
+
+    每个数字都是假的，但报告看起来毫无异常。如果不逐题看耗时，
+    很可能把它当成真实退步，然后去修一个根本不存在的问题。
+
+    一个会输出无效数字的评测器，比没有评测器更危险。
+    """
+
+    def __init__(self, reason: str, completed: int, total: int, consecutive: int = 0):
+        super().__init__(reason)
+        self.reason = reason
+        self.completed = completed
+        self.total = total
+        self.consecutive = consecutive
+
+
+def classify_error(detail: str) -> str:
+    """把报错归类成 persistent / transient / unknown。"""
+    text = (detail or "").lower()
+
+    for pattern in PERSISTENT_ERROR_PATTERNS:
+        if pattern in text:
+            return "persistent"
+
+    for pattern in TRANSIENT_ERROR_PATTERNS:
+        if pattern in text:
+            return "transient"
+
+    return "unknown"
+
 
 @dataclass
 class CaseOutcome:
@@ -176,6 +243,12 @@ def run_case_with_retry(
         outcome.attempts = attempt
 
         if outcome.status != "crash" or attempt > retries:
+            return outcome
+
+        # 持续性故障重试毫无意义：DNS 不通、Key 失效、余额耗尽，
+        # 再试一百次也是一样的结果，只会白烧时间掩盖问题。
+        if classify_error(outcome.detail) == "persistent":
+            print(f"{'':<8}✗ 持续性故障，不重试：{outcome.detail[:70]}", flush=True)
             return outcome
 
         print(f"{'':<8}↻ 瞬时故障，重试 {attempt}/{retries}：{outcome.detail[:60]}", flush=True)
@@ -484,6 +557,30 @@ def report(aggregates: List[CaseAggregate]) -> None:
           f"平均每次 {elapsed_total / runs_total:.1f}s")
 
 
+def report_aborted(aborted: EvalAborted, aggregates: List[CaseAggregate]) -> None:
+    """
+    评测中止时的报告。
+
+    关键在于**不输出任何指标**。半截数据算出来的准确率没有意义，
+    而一旦印成百分数就会被当成结论。
+    """
+    print("\n" + "=" * 92)
+    print("⛔ 评测未完成，不输出指标")
+    print("=" * 92)
+    print(f"  中止原因　连续 {aborted.consecutive} 次基础设施故障")
+    print(f"  报错信息　{aborted.reason[:150]}")
+    print(f"  故障类型　{classify_error(aborted.reason)}")
+    print(f"  完成进度　{aborted.completed}/{aborted.total} 题")
+
+    print("\n  半截数据算出来的准确率没有意义，因此这里不给任何百分比。")
+    print("  请先排查环境（网络 / DNS / API Key / 余额 / 限流），再重跑。")
+
+    if aggregates:
+        passed = sum(1 for item in aggregates if item.passed)
+        print(f"\n  仅供参考：中止前完成的 {len(aggregates)} 题中 {passed} 题通过，"
+              f"但样本不完整，不可与完整基线比较。")
+
+
 def sample_status(aggregate: CaseAggregate) -> str:
     """取聚合结果里最具代表性的失败状态。"""
     return aggregate.representative.status
@@ -494,6 +591,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--case", default="", help="只跑指定题号，例如 E03")
     parser.add_argument("--tag", default="", help="只跑指定考点")
     parser.add_argument("--retries", type=int, default=2, help="瞬时故障重试次数")
+    parser.add_argument(
+        "--abort-after", type=int, default=3,
+        help="连续多少次基础设施故障后中止评测，避免输出半截数据算出的假指标",
+    )
     parser.add_argument(
         "--repeat", type=int, default=1,
         help="每题重复跑几次。单次运行误差约 ±5%%，对比调参效果建议 3 次以上",
@@ -540,19 +641,42 @@ def main() -> None:
         print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
 
     aggregates = []
-    for index, case in enumerate(cases, start=1):
-        print(f"  [{index}/{len(cases)}] {case.id} {case.query}", flush=True)
+    consecutive_infra_failures = 0
 
-        aggregate = CaseAggregate(case=case)
-        for _ in range(repeat):
-            aggregate.outcomes.append(
-                run_case_with_retry(pipeline, db_path, case, args.retries)
-            )
+    try:
+        for index, case in enumerate(cases, start=1):
+            print(f"  [{index}/{len(cases)}] {case.id} {case.query}", flush=True)
 
-        if repeat > 1 and aggregate.stability == "flaky":
-            print(f"{'':<8}~ 抖动：{aggregate.passes}/{aggregate.runs} 通过", flush=True)
+            aggregate = CaseAggregate(case=case)
 
-        aggregates.append(aggregate)
+            for _ in range(repeat):
+                outcome = run_case_with_retry(pipeline, db_path, case, args.retries)
+                aggregate.outcomes.append(outcome)
+
+                if outcome.status == "crash" and classify_error(outcome.detail) in {
+                    "persistent",
+                    "transient",
+                }:
+                    consecutive_infra_failures += 1
+
+                    if consecutive_infra_failures >= args.abort_after:
+                        raise EvalAborted(
+                            reason=outcome.detail,
+                            completed=index - 1,
+                            total=len(cases),
+                            consecutive=consecutive_infra_failures,
+                        )
+                else:
+                    consecutive_infra_failures = 0
+
+            if repeat > 1 and aggregate.stability == "flaky":
+                print(f"{'':<8}~ 抖动：{aggregate.passes}/{aggregate.runs} 通过", flush=True)
+
+            aggregates.append(aggregate)
+
+    except EvalAborted as aborted:
+        report_aborted(aborted, aggregates)
+        sys.exit(2)
 
     report(aggregates)
 

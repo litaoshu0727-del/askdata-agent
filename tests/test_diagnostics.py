@@ -258,3 +258,56 @@ class DatabasePrefixTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvalErrorClassificationTestCase(unittest.TestCase):
+    """
+    回归守卫：评测器的故障分类与熔断。
+
+    一次 150 运行的评测跑到一半断网，后面 26 题全部 0.0 秒失败，
+    重试空转 162 次，最后仍吐出格式完整的报告——端到端 42%、陷阱题 0/5、
+    "三次运行波动 0 题"。每个数字都是假的，但报告看起来毫无异常。
+
+    一个会输出无效数字的评测器，比没有评测器更危险。
+    """
+
+    def classify(self, detail: str) -> str:
+        from eval.runner import classify_error
+
+        return classify_error(detail)
+
+    def test_dns_failure_is_persistent(self):
+        """真实踩到的那条报错，重试一百次也没用。"""
+        self.assertEqual(
+            self.classify(
+                "调用关键词抽取模型失败: <urlopen error [Errno 8] "
+                "nodename nor servname provided, or not known>"
+            ),
+            "persistent",
+        )
+
+    def test_auth_and_balance_are_persistent(self):
+        for detail in ["HTTP Error 401: Unauthorized", "HTTP Error 402: Insufficient Balance"]:
+            with self.subTest(报错=detail):
+                self.assertEqual(self.classify(detail), "persistent")
+
+    def test_timeout_and_rate_limit_are_transient(self):
+        for detail in ["The read operation timed out", "HTTP Error 429: Too Many Requests"]:
+            with self.subTest(报错=detail):
+                self.assertEqual(self.classify(detail), "transient")
+
+    def test_sql_error_is_not_infrastructure(self):
+        """SQL 报错是系统的真实失败，不该被当成环境故障计入熔断。"""
+        self.assertEqual(
+            self.classify("no such column: fact_order.category_id"),
+            "unknown",
+        )
+
+    def test_aborted_carries_progress(self):
+        from eval.runner import EvalAborted
+
+        aborted = EvalAborted(reason="DNS 挂了", completed=23, total=50, consecutive=3)
+
+        self.assertEqual(aborted.completed, 23)
+        self.assertEqual(aborted.total, 50)
+        self.assertEqual(aborted.consecutive, 3)
