@@ -311,6 +311,8 @@ class AskDataText2SQLPipeline:
                 ThinkingModelConfig(
                     use_mock_when_no_api_key=True,
                     temperature=0.0,
+                    # CoT 规划开着 thinking 模式，默认 60s 会偶发超时。
+                    timeout=150,
                 )
             )
         )

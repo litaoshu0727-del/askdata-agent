@@ -196,5 +196,65 @@ class MockFallbackDiagnosticTestCase(unittest.TestCase):
         self.assertTrue(all(isinstance(item, str) for item in payload["diagnostics"]))
 
 
+class DatabasePrefixTestCase(unittest.TestCase):
+    """
+    回归守卫：评测 E09。
+
+    模型偶尔把表名写成 `ecommerce_db.fact_user_behavior`，SQLite 直接报
+    no such table。这个 bug 是间歇性的——同一道题连过两轮、第三轮才挂，
+    靠手跑单条 Query 基本发现不了。
+    """
+
+    def setUp(self):
+        from sql_generation.coder_client import CoderModelClient
+
+        self.client = CoderModelClient()
+
+    def clean(self, sql: str, database: str = "ecommerce_db"):
+        with silenced(), collect() as diagnostics:
+            cleaned = self.client.clean_sql(sql, database=database)
+        return cleaned, {item.code for item in diagnostics}
+
+    def test_strips_database_prefix_and_reports(self):
+        cleaned, codes = self.clean(
+            "SELECT COUNT(behavior_id) FROM ecommerce_db.fact_user_behavior "
+            "WHERE behavior_type = '加购';"
+        )
+
+        self.assertNotIn("ecommerce_db.", cleaned)
+        self.assertIn("FROM fact_user_behavior", cleaned)
+        self.assertIn(Codes.SQL_DB_PREFIX_STRIPPED, codes)
+
+    def test_strips_every_occurrence(self):
+        cleaned, _ = self.clean(
+            "SELECT a.x FROM ecommerce_db.t1 a JOIN ecommerce_db.t2 b ON a.id=b.id;"
+        )
+
+        self.assertNotIn("ecommerce_db", cleaned)
+
+    def test_case_insensitive(self):
+        cleaned, codes = self.clean("SELECT x FROM ECOMMERCE_DB.t;")
+
+        self.assertNotIn("ECOMMERCE_DB", cleaned)
+        self.assertIn(Codes.SQL_DB_PREFIX_STRIPPED, codes)
+
+    def test_table_dot_column_is_not_damaged(self):
+        """最要紧的一条：正常的 表.字段 限定不能被误伤。"""
+        cleaned, codes = self.clean(
+            "SELECT fact_order.pay_amount FROM fact_order "
+            "JOIN dim_user ON dim_user.user_id = fact_order.user_id;"
+        )
+
+        self.assertIn("fact_order.pay_amount", cleaned)
+        self.assertIn("dim_user.user_id", cleaned)
+        self.assertNotIn(Codes.SQL_DB_PREFIX_STRIPPED, codes)
+
+    def test_no_database_name_is_noop(self):
+        cleaned, codes = self.clean("SELECT x FROM t;", database="")
+
+        self.assertEqual(cleaned, "SELECT x FROM t;")
+        self.assertNotIn(Codes.SQL_DB_PREFIX_STRIPPED, codes)
+
+
 if __name__ == "__main__":
     unittest.main()

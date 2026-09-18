@@ -29,6 +29,7 @@ class SqlPromptBuilder:
 4. 只输出SQL语句，不输出解释性内容。
 5. SQL需要符合{request.sql_dialect}语法。
 6. 不要输出Markdown代码块，不要输出```sql。
+7. 表名直接写表名，不要加数据库名前缀。写 fact_order，不要写 xxx_db.fact_order。
 
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}

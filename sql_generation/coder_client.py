@@ -6,7 +6,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
-from askdata_diagnostics import Codes, OnceEmitter
+from askdata_diagnostics import Codes, OnceEmitter, emit
 from llm_config import resolve_chat_provider
 
 
@@ -142,7 +142,7 @@ WHERE trade_summary.total_trade_count > 50000;"""
 
         return "SELECT 1;"
 
-    def clean_sql(self, text: str) -> str:
+    def clean_sql(self, text: str, database: str = "") -> str:
         """
         清理模型输出，只保留 SQL。
 
@@ -150,6 +150,11 @@ WHERE trade_summary.total_trade_count > 50000;"""
         - 去掉 Markdown 代码块
         - 去掉“输出SQL语句：”之类的前缀
         - 提取 SELECT/WITH 开头的 SQL
+        - 剥掉表名上的数据库名前缀
+
+        Args:
+            text: 模型原始输出。
+            database: 当前数据库名。传入时会剥掉 SQL 里的 `<database>.` 前缀。
         """
         text = text.strip()
 
@@ -184,7 +189,41 @@ WHERE trade_summary.total_trade_count > 50000;"""
         else:
             sql = text
 
+        sql = self._strip_database_prefix(sql, database)
+
         if sql and not sql.endswith(";"):
             sql += ";"
 
         return sql
+
+    @staticmethod
+    def _strip_database_prefix(sql: str, database: str) -> str:
+        """
+        剥掉表名上的数据库名前缀。
+
+        模型偶尔会写成 `ecommerce_db.fact_user_behavior`——这个前缀是从
+        CoT 四元组的「数据库: ecommerce_db」里捡来的（SQL Prompt 本身不含库名）。
+        SQLite 只挂载一个库，这种限定符必然报 no such table。
+
+        Prompt 里已经加了规则，但 Prompt 约束不到 100%，所以这里再兜一层。
+        因为执行器只有一个库，凡是等于库名的限定符一律是错的，剥掉总是安全的。
+        """
+        if not database or not sql:
+            return sql
+
+        pattern = re.compile(
+            rf"\b{re.escape(database)}\s*\.\s*(?=[\"\'`\[]?[A-Za-z_])",
+            flags=re.I,
+        )
+
+        cleaned, count = pattern.subn("", sql)
+
+        if count:
+            emit(
+                Codes.SQL_DB_PREFIX_STRIPPED,
+                "模型给表名加了数据库名前缀，已自动剥除",
+                数据库=database,
+                出现次数=count,
+            )
+
+        return cleaned

@@ -67,6 +67,9 @@ class Codes:
     QUERY_REWRITE_FAILED = "QUERY_REWRITE_FAILED"
     """指代消解调用失败，已回退为原始 Query。"""
 
+    SQL_DB_PREFIX_STRIPPED = "SQL_DB_PREFIX_STRIPPED"
+    """模型给表名加了数据库名前缀，已自动剥除。SQLite 不接受这种限定符。"""
+
     EMPTY_RESULT_SET = "EMPTY_RESULT_SET"
     """SQL 执行成功但返回 0 行，筛选条件可能有问题（例如凭空推断的 ID）。"""
 

@@ -47,7 +47,7 @@ class SqlGenerator:
 
         prompt = self.prompt_builder.build(request)
         raw_output = self.coder_client.generate_sql(prompt)
-        sql = self.coder_client.clean_sql(raw_output)
+        sql = self.coder_client.clean_sql(raw_output, database=cot_step.database)
 
         return SqlGenerationResult(
             database=cot_step.database,
