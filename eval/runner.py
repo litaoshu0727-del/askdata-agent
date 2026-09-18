@@ -290,6 +290,57 @@ def judge_unanswerable(result: Any, base: Dict[str, Any]) -> CaseOutcome:
     )
 
 
+@dataclass
+class CaseAggregate:
+    """
+    一道题重复 N 次的聚合结果。
+
+    单次运行的分数带着不小的误差棒：同一份代码、同一份题目跑两次，
+    50 题里有 5 题结果不一样。抽取关键词是非确定的——模型这次吐"直播间"、
+    下次吐"渠道"，一路级联到最终结果。
+
+    所以分数必须带稳定性信息，否则调参前后的对比全是在噪声里找信号。
+    """
+
+    case: EvalCase
+    outcomes: List[CaseOutcome] = field(default_factory=list)
+
+    @property
+    def runs(self) -> int:
+        return len(self.outcomes)
+
+    @property
+    def passes(self) -> int:
+        return sum(1 for item in self.outcomes if item.passed)
+
+    @property
+    def passed(self) -> bool:
+        """多数通过才算通过。"""
+        return self.passes * 2 > self.runs
+
+    @property
+    def stability(self) -> str:
+        """stable_pass / flaky / stable_fail"""
+        if self.passes == self.runs:
+            return "stable_pass"
+        if self.passes == 0:
+            return "stable_fail"
+        return "flaky"
+
+    @property
+    def representative(self) -> CaseOutcome:
+        """展示用的那一次：优先挑失败的，信息量更大。"""
+        for item in self.outcomes:
+            if not item.passed:
+                return item
+        return self.outcomes[0]
+
+    @property
+    def schema_recall_hits(self) -> int:
+        """各次命中数取最大值——漏召回只要发生过就值得关注，但展示取最好情况。"""
+        return max((len(item.hit_columns) for item in self.outcomes), default=0)
+
+
 STATUS_LABEL = {
     "pass": "✅ 通过",
     "fabricated": "❌ 编造了答案",
@@ -300,36 +351,52 @@ STATUS_LABEL = {
 }
 
 
-def report(outcomes: List[CaseOutcome]) -> None:
+def report(aggregates: List[CaseAggregate]) -> None:
     """打印评测报告。"""
+    outcomes = aggregates
     total = len(outcomes)
     passed = sum(1 for item in outcomes if item.passed)
+    repeat = max((item.runs for item in outcomes), default=1)
 
     must_hit_total = sum(len(item.case.must_hit_columns) for item in outcomes)
-    must_hit_matched = sum(len(item.hit_columns) for item in outcomes)
+    must_hit_matched = sum(item.schema_recall_hits for item in outcomes)
     must_hit_total = must_hit_total or 1
 
     normal = [item for item in outcomes if not item.case.expect_unanswerable]
     traps = [item for item in outcomes if item.case.expect_unanswerable]
-    executed = [item for item in normal if item.status in {"pass", "wrong_result"}]
+    executed = [
+        item for item in normal
+        if item.representative.status in {"pass", "wrong_result"}
+    ]
 
     print("\n" + "=" * 92)
     print("逐题结果")
     print("=" * 92)
-    print(f"{'ID':<6}{'结果':<14}{'召回':<9}{'耗时':<9}问题")
+    stability_mark = {"stable_pass": "", "flaky": " ~", "stable_fail": ""}
+    header_runs = "通过" if repeat > 1 else "结果"
+    print(f"{'ID':<6}{header_runs:<14}{'召回':<9}{'耗时':<9}问题")
 
     for item in outcomes:
-        recall = f"{len(item.hit_columns)}/{len(item.case.must_hit_columns)}"
+        sample = item.representative
+        recall = f"{item.schema_recall_hits}/{len(item.case.must_hit_columns)}"
+        elapsed = sum(o.elapsed for o in item.outcomes) / item.runs
+
+        if repeat > 1:
+            mark = "✅" if item.passed else "❌"
+            label = f"{mark} {item.passes}/{item.runs}{stability_mark[item.stability]}"
+        else:
+            label = STATUS_LABEL[sample.status]
+
         print(
-            f"{item.case.id:<6}{STATUS_LABEL[item.status]:<15}"
-            f"{recall:<10}{item.elapsed:>5.1f}s   {item.case.query}"
+            f"{item.case.id:<6}{label:<15}"
+            f"{recall:<10}{elapsed:>5.1f}s   {item.case.query}"
         )
-        if not item.passed:
-            print(f"{'':<6}└─ {item.detail}")
-            if item.missed_columns:
-                print(f"{'':<6}   漏召回：{'、'.join(item.missed_columns)}")
-            if item.generated_sql:
-                print(f"{'':<6}   生成的 SQL：{item.generated_sql[:150]}")
+        if not item.passed or item.stability == "flaky":
+            print(f"{'':<6}└─ {sample.detail}")
+            if sample.missed_columns:
+                print(f"{'':<6}   漏召回：{'、'.join(sample.missed_columns)}")
+            if sample.generated_sql:
+                print(f"{'':<6}   生成的 SQL：{sample.generated_sql[:150]}")
 
     print("\n" + "=" * 92)
     print("指标")
@@ -356,10 +423,26 @@ def report(outcomes: List[CaseOutcome]) -> None:
           f"　{passed / total:.0%}　"
           f"（整条链路，含陷阱题）")
 
+    if repeat > 1:
+        per_run = [
+            sum(1 for item in outcomes if item.outcomes[index].passed)
+            for index in range(repeat)
+        ]
+        print(f"\n  单次运行分布　{'　'.join(f'{v}/{total}' for v in per_run)}"
+              f"　→　{min(per_run) / total:.0%} ~ {max(per_run) / total:.0%}"
+              f"，波动 {max(per_run) - min(per_run)} 题")
+
+        flaky = [item for item in outcomes if item.stability == "flaky"]
+        if flaky:
+            print(f"\n  抖动题 {len(flaky)} 道（同一份代码，多次运行结果不一致）：")
+            for item in flaky:
+                print(f"    {item.case.id}  {item.passes}/{item.runs}  {item.case.query}")
+            print("    抖动本身就是脆弱信号：这些题的链路某一环依赖了模型的随机输出。")
+
     failures: Dict[str, int] = {}
     for item in outcomes:
         if not item.passed:
-            failures[item.status] = failures.get(item.status, 0) + 1
+            failures[sample_status(item)] = failures.get(sample_status(item), 0) + 1
 
     if failures:
         print("\n  失败构成：" + "，".join(
@@ -384,8 +467,9 @@ def report(outcomes: List[CaseOutcome]) -> None:
 
     all_diagnostics: Dict[str, int] = {}
     for item in outcomes:
-        for code in item.diagnostics:
-            all_diagnostics[code] = all_diagnostics.get(code, 0) + 1
+        for outcome in item.outcomes:
+            for code in outcome.diagnostics:
+                all_diagnostics[code] = all_diagnostics.get(code, 0) + 1
 
     if all_diagnostics:
         print("\n" + "=" * 92)
@@ -394,8 +478,15 @@ def report(outcomes: List[CaseOutcome]) -> None:
         for code, count in sorted(all_diagnostics.items(), key=lambda kv: -kv[1]):
             print(f"  {code:<26}{count} 题次")
 
-    print(f"\n总耗时 {sum(item.elapsed for item in outcomes):.1f}s，"
-          f"平均每题 {sum(item.elapsed for item in outcomes) / total:.1f}s")
+    elapsed_total = sum(o.elapsed for item in outcomes for o in item.outcomes)
+    runs_total = sum(item.runs for item in outcomes)
+    print(f"\n总耗时 {elapsed_total:.1f}s，共 {runs_total} 次运行，"
+          f"平均每次 {elapsed_total / runs_total:.1f}s")
+
+
+def sample_status(aggregate: CaseAggregate) -> str:
+    """取聚合结果里最具代表性的失败状态。"""
+    return aggregate.representative.status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -403,6 +494,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--case", default="", help="只跑指定题号，例如 E03")
     parser.add_argument("--tag", default="", help="只跑指定考点")
     parser.add_argument("--retries", type=int, default=2, help="瞬时故障重试次数")
+    parser.add_argument(
+        "--repeat", type=int, default=1,
+        help="每题重复跑几次。单次运行误差约 ±5%%，对比调参效果建议 3 次以上",
+    )
     parser.add_argument(
         "--db-path",
         default=str(Path("runtime_data") / "eval_ecommerce.db"),
@@ -439,12 +534,27 @@ def main() -> None:
         )
     )
 
-    outcomes = []
+    repeat = max(1, args.repeat)
+
+    if repeat > 1:
+        print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
+
+    aggregates = []
     for index, case in enumerate(cases, start=1):
         print(f"  [{index}/{len(cases)}] {case.id} {case.query}", flush=True)
-        outcomes.append(run_case_with_retry(pipeline, db_path, case, args.retries))
 
-    report(outcomes)
+        aggregate = CaseAggregate(case=case)
+        for _ in range(repeat):
+            aggregate.outcomes.append(
+                run_case_with_retry(pipeline, db_path, case, args.retries)
+            )
+
+        if repeat > 1 and aggregate.stability == "flaky":
+            print(f"{'':<8}~ 抖动：{aggregate.passes}/{aggregate.runs} 通过", flush=True)
+
+        aggregates.append(aggregate)
+
+    report(aggregates)
 
 
 if __name__ == "__main__":

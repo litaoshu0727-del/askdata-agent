@@ -60,6 +60,34 @@ class HybridSchemaRetrievalConfig:
     """每个关键词在每一路召回中的 Top-K 数量。"""
 
     include_join_columns: bool = True
+
+    dominant_keyword_ratio: float = 3.0
+    """
+    字面命中"压倒性"的判定倍数。
+
+    某个字段在 BM25 里排第一、且分数达到第二名的这个倍数时，
+    直接保送进最终结果，不参与精排淘汰。
+
+    动机：RRF 只看排名不看分数。"直播间"在 fact_order.channel 上得 27.1 分，
+    第二名只有 3.5 分——7.7 倍的压倒性证据，在 RRF 里却和"向量路第一名"
+    贡献同样的 1/(60+k)，强度信息被完全抹掉，随后被精排按语义相关度淘汰。
+
+    设成 0 可关闭该机制。
+    """
+
+    dominant_keyword_min_score: float = 8.0
+    """保送的绝对分数下限，避免在整体分数都很低时误保送。"""
+
+    max_dominant_per_query: int = 4
+    """单次查询最多保送几个字段，防止保送集喧宾夺主。"""
+
+    include_label_columns: bool = True
+    """
+    是否自动把每张命中表的名称列补进 SchemaGraph。
+
+    检索偏向指标字段，"哪家店/哪个用户"隐含要的名称列经常被挤掉，
+    导致模型只能输出 ID。这个开关按表补齐，代价是每张表多一列。
+    """
     """构建 SchemaGraph 时是否自动补充 Join 字段。"""
 
     rrf_config: RRFFusionConfig = field(
@@ -242,12 +270,18 @@ class HybridSchemaRetrievalService:
             fusion_hits=fusion_hits,
         )
 
+        schema_hits = self._add_dominant_keyword_hits(
+            keywords=resolved_keywords,
+            schema_hits=schema_hits,
+        )
+
         schema_graph = build_schema_graph(
             hits=schema_hits,
             tables=self.tables,
             all_columns=self.columns,
             relations=self.relations,
             include_join_columns=self.config.include_join_columns,
+            include_label_columns=self.config.include_label_columns,
         )
         return HybridSchemaRetrievalResult(
             query=query,
@@ -258,6 +292,89 @@ class HybridSchemaRetrievalService:
             schema_hits=schema_hits,
             schema_graph=schema_graph,
         )
+
+    def _find_dominant_keyword_docs(self, keywords: Sequence[str]) -> List[int]:
+        """
+        找出字面命中压倒性的字段下标。
+
+        判据是"分数断层"而不是绝对分数：排第一、且大幅甩开第二名。
+        断层意味着这个词几乎只可能在说这一个字段——"直播间"除了下单渠道
+        没有别的解释，"标价"除了 list_price 也没有。
+        """
+        if self.config.dominant_keyword_ratio <= 0:
+            return []
+
+        dominant: List[int] = []
+
+        for keyword in keywords:
+            hits = self.keyword_index.search(keyword, top_k=2)
+
+            if not hits:
+                continue
+
+            top_index, top_score = hits[0]
+
+            if top_score < self.config.dominant_keyword_min_score:
+                continue
+
+            runner_up = hits[1][1] if len(hits) > 1 else 0.0
+
+            # 第二名为 0 时视为绝对断层
+            if runner_up <= 0 or top_score >= runner_up * self.config.dominant_keyword_ratio:
+                if top_index not in dominant:
+                    dominant.append(top_index)
+
+        return dominant[: self.config.max_dominant_per_query]
+
+    def _add_dominant_keyword_hits(
+        self,
+        keywords: Sequence[str],
+        schema_hits: List[SchemaHit],
+    ) -> List[SchemaHit]:
+        """
+        把字面压倒性命中的字段补进最终结果。
+
+        这是对 RRF 丢失强度信息的补偿，和 include_join_columns / include_label_columns
+        属于同一类做法：检索管线会漏掉某些"本该在里面"的字段，就在出口处补回来。
+        """
+        dominant_indices = self._find_dominant_keyword_docs(keywords)
+
+        if not dominant_indices:
+            return schema_hits
+
+        existing = {
+            (hit.column.table_name, hit.column.column_name)
+            for hit in schema_hits
+        }
+
+        added = []
+
+        for doc_index in dominant_indices:
+            document = self.documents[doc_index]
+            key = (document.column.table_name, document.column.column_name)
+
+            if key in existing:
+                continue
+
+            schema_hits.append(
+                SchemaHit(
+                    doc_id=document.doc_id,
+                    score=0.0,
+                    column=document.column,
+                    keyword_rank=1,
+                )
+            )
+            existing.add(key)
+            added.append(f"{key[0]}.{key[1]}")
+
+        if added:
+            emit(
+                Codes.DOMINANT_KEYWORD_RESCUED,
+                "字面命中压倒性的字段被精排淘汰，已强制补回",
+                字段="、".join(added),
+            )
+
+        return schema_hits
 
     def _resolve_keywords(
         self,

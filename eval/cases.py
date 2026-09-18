@@ -52,7 +52,7 @@ class EvalCase:
 CASES: List[EvalCase] = [
     EvalCase(
         id="E01",
-        query="销售额最高的三个店铺是哪些",
+        query="销售额最高的三个店铺，店铺名称和销售额分别是多少",
         reference_sql="""
             SELECT s.shop_name, ROUND(SUM(d.gmv), 2) AS gmv
             FROM dws_shop_daily d

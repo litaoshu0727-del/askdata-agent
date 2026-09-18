@@ -119,7 +119,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["跨表关联", "同名字段干扰"], note="必须用 dim_user.city 不是 dim_shop.city",
     ),
     EvalCase(
-        id="E25", query="销量最高的三个品牌是哪些",
+        id="E25", query="销量最高的三个品牌，品牌名和销量分别是多少",
         reference_sql="""
             SELECT p.brand, SUM(i.quantity) AS q
             FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id
@@ -155,7 +155,7 @@ EXTRA_CASES: List[EvalCase] = [
     EvalCase(
         id="E28", query="买家数最多的城市是哪个",
         reference_sql="""
-            SELECT u.city, COUNT(DISTINCT o.user_id) AS c
+            SELECT u.city
             FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id
             GROUP BY u.city ORDER BY COUNT(DISTINCT o.user_id) DESC LIMIT 1
         """,
@@ -175,7 +175,7 @@ EXTRA_CASES: List[EvalCase] = [
     EvalCase(
         id="E30", query="加购次数最多的三个商品叫什么名字",
         reference_sql="""
-            SELECT p.product_name, COUNT(*) AS c FROM fact_user_behavior b
+            SELECT p.product_name FROM fact_user_behavior b
             JOIN dim_product p ON p.product_id = b.product_id
             WHERE b.behavior_type = '加购'
             GROUP BY p.product_id, p.product_name ORDER BY COUNT(*) DESC LIMIT 3

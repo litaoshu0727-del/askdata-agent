@@ -67,6 +67,9 @@ class Codes:
     QUERY_REWRITE_FAILED = "QUERY_REWRITE_FAILED"
     """指代消解调用失败，已回退为原始 Query。"""
 
+    DOMINANT_KEYWORD_RESCUED = "DOMINANT_KEYWORD_RESCUED"
+    """字面命中压倒性的字段被精排淘汰，已强制补回。频繁出现说明精排阈值需要调。"""
+
     SQL_DB_PREFIX_STRIPPED = "SQL_DB_PREFIX_STRIPPED"
     """模型给表名加了数据库名前缀，已自动剥除。SQLite 不接受这种限定符。"""
 
