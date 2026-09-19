@@ -67,6 +67,15 @@ class Codes:
     QUERY_REWRITE_FAILED = "QUERY_REWRITE_FAILED"
     """指代消解调用失败，已回退为原始 Query。"""
 
+    SQL_REPAIRED = "SQL_REPAIRED"
+    """SQL 执行失败后经回调修正成功。正常的自愈行为，但频繁出现说明生成质量有问题。"""
+
+    SQL_REPAIR_FAILED = "SQL_REPAIR_FAILED"
+    """SQL 执行失败且修正后仍然失败。"""
+
+    SELF_CONSISTENCY_DISAGREEMENT = "SELF_CONSISTENCY_DISAGREEMENT"
+    """自洽性投票中多次运行结果不一致，已取多数。分歧越多说明这个问题越不稳。"""
+
     SCHEMA_RECALL_MISS = "SCHEMA_RECALL_MISS"
     """CoT 判缺失，但全量 Schema 下可答——说明是检索漏召回，已自动补救。频繁出现说明召回该调。"""
 

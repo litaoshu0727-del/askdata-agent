@@ -594,6 +594,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tag", default="", help="只跑指定考点")
     parser.add_argument("--retries", type=int, default=2, help="瞬时故障重试次数")
     parser.add_argument(
+        "--self-consistency", type=int, default=1,
+        help="自洽性投票次数，同一问题跑 N 次取多数。1 表示关闭",
+    )
+    parser.add_argument(
+        "--repair", type=int, default=1,
+        help="SQL 执行失败时的回调修正次数，0 表示关闭",
+    )
+    parser.add_argument(
         "--abort-after", type=int, default=3,
         help="连续多少次基础设施故障后中止评测，避免输出半截数据算出的假指标",
     )
@@ -634,6 +642,8 @@ def main() -> None:
             database_name="ecommerce_db",
             db_path=db_path,
             sample_size=5,
+            self_consistency_runs=args.self_consistency,
+            sql_repair_attempts=args.repair,
         )
     )
 
@@ -641,6 +651,8 @@ def main() -> None:
 
     if repeat > 1:
         print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
+    if args.self_consistency > 1 or args.repair != 1:
+        print(f"配置：自洽性投票 {args.self_consistency} 次，SQL 回调修正 {args.repair} 次")
 
     aggregates = []
     consecutive_infra_failures = 0

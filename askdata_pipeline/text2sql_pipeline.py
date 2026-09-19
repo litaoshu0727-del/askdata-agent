@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional
 
@@ -129,6 +130,31 @@ class AskDataText2SQLPipeline:
         schema_graph = retrieval_result.schema_graph
         schema_context = schema_graph.to_prompt_context()
 
+        runs = max(1, self.config.self_consistency_runs)
+        attempts = [
+            self._plan_and_execute(contextual_query, schema_graph)
+            for _ in range(runs)
+        ]
+
+        cot_result, step_logs, schema_graph = self._vote(attempts, schema_graph)
+
+        return PipelineResult(
+            query=query,
+            rewritten_query=rewrite.rewritten if rewrite.changed else "",
+            keywords=resolved_keywords,
+            schema_context=schema_graph.to_prompt_context(),
+            cot_output=cot_result.raw_output,
+            step_logs=step_logs,
+            diagnostics=self.setup_diagnostics + list(diagnostics),
+        )
+
+    def _plan_and_execute(self, contextual_query: str, schema_graph):
+        """
+        跑一次完整的「CoT 规划 → SQL 生成 → 执行」。
+
+        抽出来是为了让外层可以重复调用做自洽性投票。
+        检索结果不在这里，因为它是确定的，重跑没有意义也白花钱。
+        """
         cot_result = self.cot_planner.plan(
             user_query=contextual_query,
             schema_graph=schema_graph,
@@ -202,6 +228,40 @@ class AskDataText2SQLPipeline:
             execution_request = sql_result.to_execution_request()
             execution_result = self.mcp_router.execute(execution_request)
 
+            # 执行失败就把报错喂回模型重新生成。
+            # 执行器的报错是一手信息——"no such column: fact_order.category_id"
+            # 直接点名了问题所在，比让模型凭空重想一遍有效得多。
+            repair_budget = max(0, self.config.sql_repair_attempts)
+
+            for repair_round in range(repair_budget):
+                if execution_result.success:
+                    break
+
+                failed_sql = sql_result.sql
+                error_text = str(execution_result.error)
+
+                sql_result = sql_generator.repair(
+                    cot_step=sql_cot_step,
+                    failed_sql=failed_sql,
+                    error=error_text,
+                )
+                execution_request = sql_result.to_execution_request()
+                execution_result = self.mcp_router.execute(execution_request)
+
+                if execution_result.success:
+                    emit(
+                        Codes.SQL_REPAIRED,
+                        "SQL 执行失败后经回调修正成功",
+                        第几次=repair_round + 1,
+                        原报错=error_text[:80],
+                    )
+                elif repair_round == repair_budget - 1:
+                    emit(
+                        Codes.SQL_REPAIR_FAILED,
+                        "SQL 执行失败，修正后仍然失败",
+                        报错=str(execution_result.error)[:80],
+                    )
+
             # SQL 跑通但一行都没返回，往往不是"确实没有数据"，
             # 而是筛选条件有问题——多轮追问里最常见的就是模型凭空推断了一个 ID。
             if execution_result.success and not execution_result.rows:
@@ -223,15 +283,61 @@ class AskDataText2SQLPipeline:
                 )
             )
 
-        return PipelineResult(
-            query=query,
-            rewritten_query=rewrite.rewritten if rewrite.changed else "",
-            keywords=resolved_keywords,
-            schema_context=schema_context,
-            cot_output=cot_result.raw_output,
-            step_logs=step_logs,
-            diagnostics=self.setup_diagnostics + list(diagnostics),
+        return cot_result, step_logs, schema_graph
+
+    @staticmethod
+    def _result_signature(step_logs) -> str:
+        """
+        把一次尝试的执行结果压成可比较的指纹。
+
+        只看最后一步的返回值，不看 SQL 文本——同一个问题有无数种正确写法，
+        比字符串没有意义，比结果才有。行内值排序、行间排序，
+        容忍列别名和排序差异。
+        """
+        if not step_logs:
+            return "∅"
+
+        execution = step_logs[-1].execution_result
+
+        if not execution.get("success"):
+            return "ERROR"
+
+        rows = execution.get("rows") or []
+
+        normalized = sorted(
+            tuple(sorted(f"{value!r}" for value in row.values()))
+            for row in rows
         )
+        return repr(normalized)
+
+    def _vote(self, attempts, fallback_graph):
+        """
+        自洽性投票：多次尝试里取结果出现次数最多的那次。
+
+        源头的不确定性消除不掉（实测同一 prompt、temperature=0，
+        DeepSeek 4 次给出 4 种输出），只能让下游容忍它。
+        """
+        if len(attempts) == 1:
+            return attempts[0]
+
+        signatures = [self._result_signature(item[1]) for item in attempts]
+        counter = Counter(signatures)
+        winner, votes = counter.most_common(1)[0]
+
+        if len(counter) > 1:
+            emit(
+                Codes.SELF_CONSISTENCY_DISAGREEMENT,
+                "多次运行结果不一致，已取多数",
+                运行次数=len(attempts),
+                不同结果数=len(counter),
+                多数票=f"{votes}/{len(attempts)}",
+            )
+
+        for attempt, signature in zip(attempts, signatures):
+            if signature == winner:
+                return attempt
+
+        return attempts[0]
 
     def _build_schema_retrieval_service(self) -> HybridSchemaRetrievalService:
         """

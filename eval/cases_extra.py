@@ -139,7 +139,8 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["跨表关联", "多跳JOIN"], note="退款→订单→用户，三张表",
     ),
     EvalCase(
-        id="E27", query="每个一级类目的退款金额分别是多少",
+        id="E27",
+        query="按店铺主营的一级类目统计，每个一级类目的退款金额分别是多少",
         reference_sql="""
             SELECT c1.category_name, ROUND(SUM(r.refund_amount), 2) AS amt
             FROM fact_refund r
@@ -150,7 +151,12 @@ EXTRA_CASES: List[EvalCase] = [
             GROUP BY c1.category_id, c1.category_name
         """,
         must_hit_columns=["fact_refund.refund_amount", "dim_category.category_name"],
-        tags=["跨表关联", "多跳JOIN"], note="四跳，路径长容易走偏",
+        tags=["跨表关联", "多跳JOIN"],
+        note=(
+            "四跳，路径长容易走偏。问法里写明按“店铺主营类目”统计——"
+            "原来只写“每个一级类目”，退款既可以归给店铺主营类目，"
+            "也可以归给订单里商品的实际类目，两条路径结果不同，题目无法判分。"
+        ),
     ),
     EvalCase(
         id="E28", query="买家数最多的城市是哪个",
@@ -222,7 +228,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["嵌套聚合"], note="",
     ),
     EvalCase(
-        id="E35", query="有过退款的用户占全部用户的比例是多少",
+        id="E35", query="有过退款的用户占全部用户的百分之多少（返回0到100之间的数）",
         reference_sql="""
             SELECT ROUND(
                 CAST(SUM(CASE WHEN refund_order_count > 0 THEN 1 ELSE 0 END) AS REAL)
@@ -314,15 +320,24 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["时间过滤", "跨表关联"], note="",
     ),
     EvalCase(
-        id="E44", query="5月下旬的退款金额比上旬多多少",
+        id="E44",
+        query="5月下旬（21日至月底）的退款金额比上旬（1日至10日）多多少，只返回差值",
         reference_sql="""
             SELECT ROUND(
-                SUM(CASE WHEN DATE(apply_time) >= '2024-05-16' THEN refund_amount ELSE 0 END)
-              - SUM(CASE WHEN DATE(apply_time) <  '2024-05-16' THEN refund_amount ELSE 0 END), 2) AS diff
+                SUM(CASE WHEN DATE(apply_time) BETWEEN '2024-05-21' AND '2024-05-31'
+                         THEN refund_amount ELSE 0 END)
+              - SUM(CASE WHEN DATE(apply_time) BETWEEN '2024-05-01' AND '2024-05-10'
+                         THEN refund_amount ELSE 0 END), 2) AS diff
             FROM fact_refund
         """,
         must_hit_columns=["fact_refund.refund_amount", "fact_refund.apply_time"],
-        tags=["时间过滤", "区间对比"], note="同一列上做两个时间窗口的差值",
+        tags=["时间过滤", "区间对比"],
+        note=(
+            "同一列上做两个时间窗口的差值。"
+            "问法里写明了旬的起止日期——原来的版本只写“上旬/下旬”，"
+            "而我自己把参考答案写成了前半月/后半月（中文历法上旬是1-10不是1-15），"
+            "模型用对了口径反被判错。"
+        ),
     ),
     EvalCase(
         id="E45", query="注册时间最早的用户注册于哪一天",

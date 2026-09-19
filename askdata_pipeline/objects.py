@@ -15,6 +15,26 @@ class PipelineConfig:
     db_path: str | Path = "runtime_data/trade_demo.db"
     sample_size: int = 5
 
+    sql_repair_attempts: int = 1
+    """
+    SQL 执行失败时的回调修正次数，0 表示关闭。
+
+    把执行器的报错喂回模型重新生成。原项目 README 标注的
+    "暂不包含结果校验与回调修正"，补的就是这一块。
+    """
+
+    self_consistency_runs: int = 1
+    """
+    自洽性投票次数，1 表示关闭。
+
+    实测同一个 prompt、temperature=0，DeepSeek 4 次给出 4 种不同输出——
+    这不是本项目的 bug，是 LLM 推理服务的固有性质：temperature=0 只保证
+    贪心解码，不保证跨请求确定性。源头的不确定性消除不掉，
+    只能让下游容忍：同一个问题跑 N 次，按执行结果取多数。
+
+    代价是 N 倍的 CoT 与 SQL 生成开销，检索结果复用不重跑。
+    """
+
     dataset: str = "trade"
     """
     使用哪套数据集。
