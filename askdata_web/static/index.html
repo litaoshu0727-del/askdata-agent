@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AskData</title>
+<style>
+  :root{
+    --ground:#F6F7F4; --surface:#FFFFFF; --sunken:#ECEFE8;
+    --ink:#171B18; --ink-soft:#3C443E; --muted:#626C65; --faint:#8A948C;
+    --rule:#DCE2D9; --rule-soft:#E8EBE4;
+    --accent:#2F6B4A; --accent-soft:#E2EDE5;
+    --warn:#9E5C15; --warn-soft:#F6EADA;
+    --code-bg:#EEF1EA; --code-ink:#22291F;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#131614; --surface:#191D1A; --sunken:#1F2421;
+      --ink:#E7EBE5; --ink-soft:#C3CBC2; --muted:#96A099; --faint:#6F7A73;
+      --rule:#2B322D; --rule-soft:#232925;
+      --accent:#74BA90; --accent-soft:#1D2C23;
+      --warn:#D79A5C; --warn-soft:#2C2318;
+      --code-bg:#1C211D; --code-ink:#DCE3DA;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased;
+  }
+  code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,"JetBrains Mono",monospace}
+
+  /* ---------- 顶栏 ---------- */
+  .bar{
+    position:sticky; top:0; z-index:20;
+    background:color-mix(in srgb,var(--surface) 92%,transparent);
+    backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--rule);
+    padding:0 20px;
+  }
+  .bar-in{max-width:1120px;margin:0 auto;display:flex;align-items:center;gap:16px;height:56px;flex-wrap:wrap}
+  .logo{font-weight:600;letter-spacing:-.01em;font-size:17px;white-space:nowrap}
+  .logo span{color:var(--accent)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;
+    font-family:ui-monospace,monospace;font-size:11px;letter-spacing:.02em;
+    padding:3px 9px;border-radius:999px;
+    border:1px solid var(--rule); background:var(--sunken); color:var(--muted);
+    white-space:nowrap;
+  }
+  .chip.on{border-color:color-mix(in srgb,var(--accent) 35%,transparent);background:var(--accent-soft);color:var(--accent)}
+  .chip.off{border-color:color-mix(in srgb,var(--warn) 35%,transparent);background:var(--warn-soft);color:var(--warn)}
+  .chip::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.8}
+  .btn{
+    font:inherit;font-size:13px;padding:6px 14px;border-radius:6px;
+    border:1px solid var(--rule);background:var(--surface);color:var(--ink-soft);
+    cursor:pointer;white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  /* ---------- 布局 ---------- */
+  .wrap{max-width:1120px;margin:0 auto;padding:0 20px 80px}
+
+  /* ---------- 提问框 ---------- */
+  .ask{margin-top:26px;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:16px}
+  .ask-row{display:flex;gap:10px;align-items:flex-end}
+  textarea{
+    flex:1;font:inherit;resize:none;border:none;outline:none;background:transparent;
+    color:var(--ink);line-height:1.6;min-height:26px;max-height:160px;padding:2px 0;
+  }
+  textarea::placeholder{color:var(--faint)}
+  .go{
+    font:inherit;font-size:14px;font-weight:500;padding:8px 20px;border-radius:6px;
+    border:none;background:var(--accent);color:var(--surface);cursor:pointer;white-space:nowrap;
+  }
+  .go:disabled{opacity:.5;cursor:not-allowed}
+  .samples{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--rule-soft)}
+  .sample{
+    font-size:12.5px;padding:5px 11px;border-radius:999px;cursor:pointer;
+    border:1px solid var(--rule);background:var(--ground);color:var(--muted);
+  }
+  .sample:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* ---------- 阶段进度 ---------- */
+  .stages{margin-top:22px;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:18px 20px}
+  .stages ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:11px}
+  .stages li{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--faint)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--rule);flex:none}
+  .stages li.active{color:var(--accent)}
+  .stages li.active .dot{background:var(--accent);animation:pulse 1.1s ease-in-out infinite}
+  .stages li.done{color:var(--muted)}
+  .stages li.done .dot{background:var(--accent);opacity:.5}
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.7);opacity:.5}}
+  .timer{margin-left:auto;font-family:ui-monospace,monospace;font-size:12px;color:var(--faint)}
+  @media (prefers-reduced-motion:reduce){.stages li.active .dot{animation:none}}
+
+  /* ---------- 卡片 ---------- */
+  .card{margin-top:20px;background:var(--surface);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+  .card-h{
+    display:flex;align-items:center;gap:10px;padding:13px 18px;
+    border-bottom:1px solid var(--rule-soft);background:var(--sunken);
+  }
+  .card-n{
+    font-family:ui-monospace,monospace;font-size:10.5px;letter-spacing:.12em;
+    color:var(--faint);
+  }
+  .card-t{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .card-x{margin-left:auto;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted)}
+  .card-b{padding:16px 18px}
+
+  .kw{display:flex;gap:8px;flex-wrap:wrap}
+  .kw span{
+    font-size:13px;padding:4px 11px;border-radius:5px;
+    background:var(--accent-soft);color:var(--accent);
+    border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);
+  }
+  .rewrite{margin-top:12px;font-size:13.5px;color:var(--muted);line-height:1.6}
+  .rewrite b{color:var(--accent);font-weight:600}
+
+  .tbl{margin-bottom:14px}
+  .tbl:last-child{margin-bottom:0}
+  .tbl-h{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:3px}
+  .tbl-s{font-size:12.5px;color:var(--faint);margin-bottom:7px;line-height:1.5}
+  .cols{display:flex;gap:6px;flex-wrap:wrap}
+  .col{
+    font-family:ui-monospace,monospace;font-size:11.5px;padding:3px 8px;border-radius:4px;
+    background:var(--sunken);color:var(--ink-soft);border:1px solid var(--rule-soft);cursor:default;
+  }
+  .col[data-role="join_key"]{color:var(--muted);opacity:.8}
+  .rels{margin-top:12px;padding-top:12px;border-top:1px solid var(--rule-soft);
+        font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);line-height:1.8}
+
+  pre.blk{
+    margin:0;background:var(--code-bg);border:1px solid var(--rule-soft);border-radius:6px;
+    padding:14px 16px;font-size:12.5px;line-height:1.7;color:var(--code-ink);
+    overflow-x:auto;white-space:pre-wrap;word-break:break-word;
+  }
+  pre.sql{white-space:pre;word-break:normal}
+
+  .rows{overflow-x:auto;border:1px solid var(--rule-soft);border-radius:6px}
+  table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+  th,td{text-align:left;padding:8px 13px;border-bottom:1px solid var(--rule-soft);white-space:nowrap}
+  thead th{background:var(--sunken);font-family:ui-monospace,monospace;font-size:11px;
+           letter-spacing:.06em;color:var(--faint);font-weight:500}
+  tbody tr:last-child td{border-bottom:none}
+  .more{padding:8px 13px;font-size:12px;color:var(--faint);background:var(--sunken)}
+
+  .diag{display:flex;flex-direction:column;gap:9px}
+  .diag div{
+    display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.6;
+    padding:10px 13px;border-radius:6px;
+    background:var(--warn-soft);border-left:2px solid var(--warn);color:var(--ink-soft);
+  }
+  .diag code{font-size:11.5px;color:var(--warn);font-weight:600;white-space:nowrap}
+  .ok{font-size:13.5px;color:var(--accent);display:flex;align-items:center;gap:8px}
+
+  .err{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;
+       padding:16px 18px;margin-top:20px;color:var(--ink-soft);font-size:13.5px;line-height:1.7}
+  .err b{color:var(--warn)}
+  .err pre{margin:8px 0 0;font-size:12px;white-space:pre-wrap;color:var(--muted)}
+
+  .route{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted)}
+  .route b{color:var(--ink);font-weight:600}
+
+  .empty{text-align:center;padding:60px 20px;color:var(--faint);font-size:14px;line-height:1.8}
+  .empty b{display:block;font-size:17px;color:var(--muted);margin-bottom:8px;font-weight:600}
+
+  @media (max-width:640px){
+    .bar-in{height:auto;padding-block:10px;gap:10px}
+    .ask-row{flex-direction:column;align-items:stretch}
+    .go{width:100%}
+    th,td{padding:7px 10px}
+  }
+</style>
+</head>
+<body>
+
+<div class="bar"><div class="bar-in">
+  <div class="logo">Ask<span>Data</span></div>
+  <div class="chips" id="chips"></div>
+  <button class="btn" id="reset">新会话</button>
+</div></div>
+
+<div class="wrap">
+
+  <div class="ask">
+    <div class="ask-row">
+      <textarea id="q" rows="1" placeholder="用自然语言问一个数据问题…"></textarea>
+      <button class="go" id="go">提问</button>
+    </div>
+    <div class="samples" id="samples"></div>
+  </div>
+
+  <div id="out">
+    <div class="empty">
+      <b>从自然语言到 SQL 的完整链路</b>
+      每一步的中间产物都会展示出来：<br>
+      指代消解 · 关键词抽取 · Schema 检索 · CoT 规划 · SQL 生成 · 执行 · 降级记录
+    </div>
+  </div>
+</div>
+
+<script>
+const SAMPLES = [
+  "销售额最高的三个店铺，店铺名称和销售额分别是多少",
+  "客单价最高的10个用户，他们的用户ID和客单价分别是多少",
+  "因为商品质量问题退款的总金额是多少",
+  "它们的退款金额分别是多少",
+  "每个用户的具体年龄是多少岁",
+];
+const STAGES = ["指代消解","关键词抽取","Schema 混合检索","CoT 四元组规划","SQL 生成","MCP 路由执行"];
+
+let sessionId = "web-" + Math.random().toString(36).slice(2, 14);
+let busy = false;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function renderSamples(){
+  $("samples").innerHTML = SAMPLES.map((s,i) =>
+    `<button class="sample" data-i="${i}">${esc(s)}</button>`).join("");
+  document.querySelectorAll(".sample").forEach(b => b.onclick = () => {
+    $("q").value = SAMPLES[+b.dataset.i]; $("q").focus(); autosize();
+  });
+}
+
+async function loadHealth(){
+  try{
+    const h = await (await fetch("/api/health")).json();
+    const model = h.provider === "mock" ? "Mock（未配置 Key）" : `${h.provider} · ${h.model}`;
+    $("chips").innerHTML = [
+      `<span class="chip">${esc(h.dataset)} · ${h.tables} 表 · ${h.columns} 字段</span>`,
+      `<span class="chip ${h.provider === "mock" ? "off" : "on"}">${esc(model)}</span>`,
+      `<span class="chip ${h.local_models ? "on" : "off"}">本地向量与精排 ${h.local_models ? "已启用" : "未启用"}</span>`,
+    ].join("");
+  }catch(e){ $("chips").innerHTML = `<span class="chip off">服务未就绪</span>`; }
+}
+
+function startStages(){
+  const t0 = Date.now();
+  $("out").innerHTML = `<div class="stages"><ol id="st">${
+    STAGES.map((s,i) => `<li data-i="${i}"><span class="dot"></span>${esc(s)}${
+      i===0 ? '<span class="timer" id="tm">0.0s</span>' : ""}</li>`).join("")
+  }</ol></div>`;
+  let cur = 0;
+  const mark = () => {
+    document.querySelectorAll("#st li").forEach((li,i) => {
+      li.className = i < cur ? "done" : (i === cur ? "active" : "");
+    });
+    const tm = $("tm");
+    if (tm) document.querySelector("#st li.active")?.appendChild(tm);
+  };
+  mark();
+  const step = setInterval(() => { if (cur < STAGES.length-1){ cur++; mark(); } }, 2600);
+  const tick = setInterval(() => { const tm = $("tm"); if (tm) tm.textContent = ((Date.now()-t0)/1000).toFixed(1)+"s"; }, 100);
+  return () => { clearInterval(step); clearInterval(tick); };
+}
+
+function card(n, title, extra, body){
+  return `<div class="card"><div class="card-h">
+      <span class="card-n">${n}</span><span class="card-t">${esc(title)}</span>
+      ${extra ? `<span class="card-x">${esc(extra)}</span>` : ""}
+    </div><div class="card-b">${body}</div></div>`;
+}
+
+function renderRows(step){
+  if (!step.success) return `<pre class="blk">执行失败：${esc(step.error)}</pre>`;
+  const rows = step.rows || [];
+  if (!rows.length) return `<div class="ok">查询成功，但没有返回任何行</div>`;
+  const cols = Object.keys(rows[0]);
+  const head = cols.map(c => `<th>${esc(c)}</th>`).join("");
+  const body = rows.slice(0,50).map(r =>
+    `<tr>${cols.map(c => `<td>${esc(r[c])}</td>`).join("")}</tr>`).join("");
+  const more = rows.length > 50 ? `<div class="more">仅显示前 50 行，共 ${step.row_count} 行</div>` : "";
+  return `<div class="rows"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>${more}</div>`;
+}
+
+function render(d){
+  const parts = [];
+
+  parts.push(card("路由", d.queried_database ? "走 Text2SQL 链路" : "走数据问答链路",
+    `${d.elapsed}s`,
+    `<div class="route"><b>${esc(d.route)}</b>　${esc(d.route_reason)}</div>`));
+
+  if (!d.queried_database){
+    parts.push(card("回答", "基于会话记忆与指标口径表", "未查询数据库",
+      `<pre class="blk">${esc(d.answer)}</pre>`));
+  } else {
+    if (d.keywords.length){
+      let b = `<div class="kw">${d.keywords.map(k => `<span>${esc(k)}</span>`).join("")}</div>`;
+      if (d.rewritten_query) b += `<div class="rewrite">指代消解　→　<b>${esc(d.rewritten_query)}</b></div>`;
+      parts.push(card("01", "检索关键词", "", b));
+    }
+
+    if (d.schema_tables.length){
+      const tables = d.schema_tables.map(t => `<div class="tbl">
+        <div class="tbl-h">${esc(t.name)}</div>
+        ${t.summary ? `<div class="tbl-s">${esc(t.summary)}</div>` : ""}
+        <div class="cols">${t.columns.map(c =>
+          `<span class="col" data-role="${esc(c.role)}" title="${esc(c.desc)}">${esc(c.name)}</span>`).join("")}</div>
+      </div>`).join("");
+      const rels = d.relations.length
+        ? `<div class="rels">${d.relations.map(r => esc(r)).join("<br>")}</div>` : "";
+      const n = d.schema_tables.reduce((s,t) => s + t.columns.length, 0);
+      parts.push(card("02", "Schema 检索命中", `${d.schema_tables.length} 表 / ${n} 字段`, tables + rels));
+    }
+
+    if (d.cot) parts.push(card("03", "CoT 四元组规划", "", `<pre class="blk">${esc(d.cot.trim())}</pre>`));
+
+    d.steps.forEach((s,i) => {
+      parts.push(card(`04.${i+1}`, "生成的 SQL", "", `<pre class="blk sql">${esc(s.sql.trim())}</pre>`));
+      parts.push(card(`05.${i+1}`, "执行结果",
+        s.success ? `${s.row_count} 行` : "执行失败", renderRows(s)));
+    });
+
+    if (!d.steps.length){
+      parts.push(card("04", "未生成 SQL", "",
+        `<div class="ok">CoT 判定 Schema 无法支撑这个问题，已阻断 SQL 生成——这是正确行为，不是故障。</div>`));
+    }
+  }
+
+  const dg = d.diagnostics || [];
+  parts.push(card("降级", "本次运行的降级记录", dg.length ? `${dg.length} 条` : "无",
+    dg.length
+      ? `<div class="diag">${dg.map(x =>
+          `<div><code>${esc(x.code)}</code><span>${esc(x.text.replace(/^\[[^\]]+\]\s*/,""))}</span></div>`).join("")}</div>`
+      : `<div class="ok">无降级，链路每一环都在满配置下跑完</div>`));
+
+  $("out").innerHTML = parts.join("");
+}
+
+async function ask(){
+  const q = $("q").value.trim();
+  if (!q || busy) return;
+  busy = true; $("go").disabled = true; $("go").textContent = "查询中";
+  const stop = startStages();
+  try{
+    const res = await fetch("/api/ask", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({query:q, session_id:sessionId, user_id:"web-user"}),
+    });
+    const d = await res.json();
+    stop();
+    if (!res.ok){
+      $("out").innerHTML = `<div class="err"><b>请求失败</b><pre>${esc(d.error||"")}\n${esc(d.hint||"")}</pre></div>`;
+    } else { render(d); }
+  }catch(e){
+    stop();
+    $("out").innerHTML = `<div class="err"><b>无法连接服务</b><pre>${esc(e)}</pre></div>`;
+  }finally{
+    busy = false; $("go").disabled = false; $("go").textContent = "提问";
+  }
+}
+
+function autosize(){ const t = $("q"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight,160)+"px"; }
+
+$("go").onclick = ask;
+$("q").addEventListener("input", autosize);
+$("q").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); ask(); }
+});
+$("reset").onclick = async () => {
+  try{ const r = await (await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+       sessionId = r.session_id || sessionId; }catch(e){}
+  $("out").innerHTML = `<div class="empty"><b>已开启新会话</b>上一段对话的记忆不再影响后续提问</div>`;
+  $("q").value = ""; autosize(); $("q").focus();
+};
+
+renderSamples(); loadHealth();
+</script>
+</body>
+</html>

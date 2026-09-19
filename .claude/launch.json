@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "askdata-web",
+      "runtimeExecutable": "/opt/anaconda3/envs/askdata-repro/bin/python",
+      "runtimeArgs": ["-m", "askdata_web.server", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
