@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from .objects import FieldDocument, TableRelation
 
@@ -79,6 +79,19 @@ class MilvusSchemaIndexClient:
         schema.add_field("keyword_text", DataType.VARCHAR, max_length=4096)
         schema.add_field("vector_text", DataType.VARCHAR, max_length=4096)
         schema.add_field("rerank_text", DataType.VARCHAR, max_length=8192)
+
+        # 完整的 ColumnSchema / TableSchema 序列化载荷。
+        #
+        # 上面那几个标量字段够用来做检索，但不够用来还原提示词上下文——
+        # description、aliases、samples、business_usage、value_range
+        # 全都不在里面，而它们恰恰是渲染进 CoT 和 SQL 提示词的业务语义。
+        #
+        # 少了它们，从索引加载出来的 SchemaGraph 会退化成只剩字段名和类型，
+        # 链路照样能跑，提示词质量却悄悄塌了一半——又一个静默失败。
+        # 所以索引必须自包含：存进去的东西要足以完整还原查询时需要的一切。
+        schema.add_field("column_json", DataType.VARCHAR, max_length=32768)
+        schema.add_field("table_json", DataType.VARCHAR, max_length=8192)
+
         schema.add_field(
             "embedding",
             DataType.FLOAT_VECTOR,
@@ -143,15 +156,27 @@ class MilvusSchemaIndexClient:
         self,
         documents: List[FieldDocument],
         embeddings: List[List[float]],
+        tables: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """写入字段级索引文档和向量。"""
+        """
+        写入字段级索引文档和向量。
+
+        Args:
+            documents: 字段级索引文档。
+            embeddings: 与 documents 一一对应的向量。
+            tables: 表名到 TableSchema 的映射。传入后索引即可自包含，
+                从索引加载时能完整还原 SchemaGraph；不传则只存字段，
+                加载出来的表信息会缺描述和别名。
+        """
         if len(documents) != len(embeddings):
             raise ValueError("documents 和 embeddings 数量不一致。")
 
+        tables = tables or {}
         rows = []
 
         for doc, embedding in zip(documents, embeddings):
             col = doc.column
+            table = tables.get(col.table_name)
 
             rows.append(
                 {
@@ -164,6 +189,10 @@ class MilvusSchemaIndexClient:
                     "keyword_text": doc.keyword_text,
                     "vector_text": doc.vector_text,
                     "rerank_text": doc.rerank_text,
+                    "column_json": json.dumps(asdict(col), ensure_ascii=False),
+                    "table_json": (
+                        json.dumps(asdict(table), ensure_ascii=False) if table else ""
+                    ),
                     "embedding": embedding,
                 }
             )
@@ -175,6 +204,44 @@ class MilvusSchemaIndexClient:
 
         self.client.flush(
             collection_name=self.config.field_collection_name,
+        )
+
+    @staticmethod
+    def _join_condition(relation) -> str:
+        """
+        取关系的 join 条件。
+
+        schema_indexing 和 schema_retrieval 各自定义了一份 TableRelation，
+        字段完全相同，但只有前者带 join_condition 这个 property——
+        **字段一样、行为不一样**，这正是两个模块一直没能接起来的深层原因：
+        类型看着兼容，实际一调就炸。
+
+        这里按鸭子类型取值，取不到就按关联键现拼一个。
+        """
+        value = getattr(relation, "join_condition", None)
+
+        if value:
+            return str(value)
+
+        return (
+            f"{relation.source_table}.{relation.source_column}"
+            f" = {relation.target_table}.{relation.target_column}"
+        )
+
+    def _relation_key(self, relation) -> str:
+        """
+        取关系主键。和 join_condition 同样的问题：
+        它也是 schema_indexing 那份 TableRelation 独有的 property。
+        """
+        value = getattr(relation, "relation_key", None)
+
+        if value:
+            return str(value)
+
+        return self.build_relation_key(
+            database=relation.database,
+            table_a=relation.source_table,
+            table_b=relation.target_table,
         )
 
     def insert_relations(self, relations: List[TableRelation]) -> None:
@@ -194,20 +261,20 @@ class MilvusSchemaIndexClient:
                 "target_table": relation.target_table,
                 "target_column": relation.target_column,
                 "relation_type": relation.relation_type,
-                "join_condition": relation.join_condition,
+                "join_condition": self._join_condition(relation),
                 "description": relation.description,
             }
 
             rows.append(
                 {
-                    "relation_key": relation.relation_key,
+                    "relation_key": self._relation_key(relation),
                     "database": relation.database,
                     "source_table": relation.source_table,
                     "source_column": relation.source_column,
                     "target_table": relation.target_table,
                     "target_column": relation.target_column,
                     "relation_type": relation.relation_type,
-                    "join_condition": relation.join_condition,
+                    "join_condition": self._join_condition(relation),
                     "description": relation.description,
                     "relation_json": json.dumps(relation_payload, ensure_ascii=False),
                 }
@@ -224,6 +291,92 @@ class MilvusSchemaIndexClient:
         self.client.flush(
             collection_name=self.config.relation_collection_name,
         )
+
+    def load_all_fields(self) -> Tuple[List[FieldDocument], List[List[float]], Dict[str, Any]]:
+        """
+        把整个字段索引读回来，用于在查询侧直接从索引重建检索服务。
+
+        Returns:
+            (documents, embeddings, tables)
+            documents 与 embeddings 一一对应，tables 为表名到 TableSchema 的映射。
+        """
+        from .objects import ColumnSchema, FieldDocument, IndexTextBundle, TableSchema
+
+        rows = self.client.query(
+            collection_name=self.config.field_collection_name,
+            filter="",
+            output_fields=[
+                "doc_id", "keyword_text", "vector_text", "rerank_text",
+                "column_json", "table_json", "embedding",
+            ],
+            limit=16384,
+        )
+
+        rows.sort(key=lambda row: row.get("doc_id", ""))
+
+        documents: List[FieldDocument] = []
+        embeddings: List[List[float]] = []
+        tables: Dict[str, Any] = {}
+
+        for row in rows:
+            payload = json.loads(row["column_json"])
+            payload.pop("index_texts", None)
+
+            column = ColumnSchema(
+                **payload,
+                index_texts=IndexTextBundle(
+                    keyword_text=row["keyword_text"],
+                    vector_text=row["vector_text"],
+                    rerank_text=row["rerank_text"],
+                ),
+            )
+
+            documents.append(
+                FieldDocument(
+                    doc_id=row["doc_id"],
+                    column=column,
+                    keyword_text=row["keyword_text"],
+                    vector_text=row["vector_text"],
+                    rerank_text=row["rerank_text"],
+                )
+            )
+            embeddings.append(list(row["embedding"]))
+
+            table_json = row.get("table_json") or ""
+            if table_json and column.table_name not in tables:
+                tables[column.table_name] = TableSchema(**json.loads(table_json))
+
+        return documents, embeddings, tables
+
+    def load_all_relations(self) -> List[TableRelation]:
+        """把表关系索引整个读回来。"""
+        rows = self.client.query(
+            collection_name=self.config.relation_collection_name,
+            filter="",
+            output_fields=["relation_json"],
+            limit=16384,
+        )
+
+        relations: List[TableRelation] = []
+
+        for row in rows:
+            payload = json.loads(row["relation_json"])
+            relations.append(
+                TableRelation(
+                    database=payload.get("database", ""),
+                    source_table=payload.get("source_table", ""),
+                    source_column=payload.get("source_column", ""),
+                    target_table=payload.get("target_table", ""),
+                    target_column=payload.get("target_column", ""),
+                    relation_type=payload.get("relation_type", "foreign_key"),
+                    description=payload.get("description", ""),
+                )
+            )
+
+        relations.sort(
+            key=lambda r: (r.source_table, r.source_column, r.target_table, r.target_column)
+        )
+        return relations
 
     def search_fields(
         self,

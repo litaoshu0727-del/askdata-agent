@@ -365,3 +365,141 @@ class MissingSchemaGuardTestCase(unittest.TestCase):
         )
 
         self.assertFalse(self.guard(step))
+
+
+class SchemaIndexRoundTripTestCase(unittest.TestCase):
+    """
+    回归守卫：索引往返必须完整还原提示词上下文。
+
+    schema_indexing 模块建了 Milvus 三级索引，主链路却每次启动重扫源库——
+    模块从没被接进来过。查下去发现三个层层递进的原因：
+
+    1. 索引只存了 9 个标量字段，而 ColumnSchema 有 17 个。
+       description / aliases / samples / business_usage 全都不在里面，
+       而它们恰恰是渲染进 CoT 和 SQL 提示词的业务语义。
+    2. 两个模块各定义了一份 TableRelation，字段相同但只有一份带
+       join_condition 和 relation_key 这两个 property——一调就炸。
+    3. 两个模块各实现了一套三级索引文本构建，产出的文本 81 个字段全不一样。
+
+    第三条最要命：光接上不校验的话，链路照样能跑，
+    提示词里的业务语义却整段丢失——又一个静默失败。
+    所以这条测试断言的不是"能加载"，而是"加载出来的东西一模一样"。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import pymilvus  # noqa: F401
+        except ImportError:
+            raise unittest.SkipTest("未安装 pymilvus，跳过索引往返测试")
+
+    def test_index_round_trip_preserves_prompt_context(self):
+        import shutil
+        import tempfile
+
+        import numpy as np
+
+        from askdata_pipeline.demo_data import (
+            create_trade_demo_database,
+            get_trade_business_meta,
+        )
+        from askdata_pipeline.local_clients import LocalHashEmbeddingClient
+        from schema_indexing.index_builder import SchemaIndexBuilder
+        from schema_indexing.milvus_client import (
+            MilvusSchemaIndexClient,
+            MilvusSchemaIndexConfig,
+        )
+        from schema_indexing.text_builder import SchemaIndexTextBuilder
+        from schema_retrieval.hybrid_schema_retrieval_service import (
+            HybridSchemaRetrievalConfig,
+            HybridSchemaRetrievalService,
+        )
+        from schema_retrieval.rerank_client import AliyunRerankClient, AliyunRerankConfig
+        from schema_retrieval.sqlite_loader import SQLiteSchemaLoader
+
+        workdir = Path(tempfile.mkdtemp())
+        db_path = create_trade_demo_database(workdir / "trade.db")
+        business_meta = get_trade_business_meta()
+
+        # 用哈希伪向量，测试不依赖模型下载
+        embedding_client = LocalHashEmbeddingClient(dimensions=256)
+        rerank_client = AliyunRerankClient(AliyunRerankConfig(api_key="", workspace_id=""))
+
+        tables, _columns, relations = SQLiteSchemaLoader(
+            db_path=db_path,
+            database_name="trade_db",
+            business_meta=business_meta,
+            sample_size=5,
+        ).load()
+
+        with silenced():
+            from_db = HybridSchemaRetrievalService.from_sqlite(
+                db_path=db_path,
+                database_name="trade_db",
+                business_meta=business_meta,
+                embedding_client=embedding_client,
+                rerank_client=rerank_client,
+                keyword_extractor=None,
+                config=HybridSchemaRetrievalConfig(),
+            )
+
+            uri = str(workdir / "index.db")
+            shutil.rmtree(uri, ignore_errors=True)
+
+            SchemaIndexBuilder(
+                text_builder=SchemaIndexTextBuilder(),
+                embedding_client=embedding_client,
+                milvus_client=MilvusSchemaIndexClient(
+                    MilvusSchemaIndexConfig(
+                        uri=uri, embedding_dim=256, recreate_collection=True
+                    )
+                ),
+            ).build(
+                columns=from_db.columns,
+                relations=relations,
+                tables=tables,
+                documents=from_db.documents,
+            )
+
+            from_index = HybridSchemaRetrievalService.from_milvus(
+                uri=uri,
+                embedding_client=embedding_client,
+                rerank_client=rerank_client,
+                config=HybridSchemaRetrievalConfig(),
+            )
+
+        self.assertEqual(len(from_index.documents), len(from_db.documents))
+
+        by_id_db = {d.doc_id: d for d in from_db.documents}
+        by_id_ix = {d.doc_id: d for d in from_index.documents}
+        self.assertEqual(set(by_id_db), set(by_id_ix))
+
+        for doc_id, doc in by_id_db.items():
+            for field_name in ("keyword_text", "vector_text", "rerank_text"):
+                with self.subTest(字段=doc_id, 文本=field_name):
+                    self.assertEqual(
+                        getattr(doc, field_name),
+                        getattr(by_id_ix[doc_id], field_name),
+                    )
+
+        # 向量必须逐元素一致，否则召回排序会悄悄漂移
+        emb_db = {d.doc_id: from_db.vector_index.embeddings[i]
+                  for i, d in enumerate(from_db.documents)}
+        emb_ix = {d.doc_id: from_index.vector_index.embeddings[i]
+                  for i, d in enumerate(from_index.documents)}
+        for doc_id in emb_db:
+            with self.subTest(向量=doc_id):
+                self.assertTrue(np.allclose(emb_db[doc_id], emb_ix[doc_id]))
+
+        # 最终断言：同一个查询，两条路径的提示词上下文逐字节一致
+        for query, keywords in [
+            ("查询总交易笔数大于50000的利率是多少", ["总交易笔数", "利率"]),
+            ("用户的活跃天数是多少", ["活跃天数"]),
+        ]:
+            with self.subTest(查询=query), silenced():
+                left = from_db.retrieve(query=query, keywords=keywords)
+                right = from_index.retrieve(query=query, keywords=keywords)
+                self.assertEqual(
+                    left.schema_graph.to_prompt_context(),
+                    right.schema_graph.to_prompt_context(),
+                )

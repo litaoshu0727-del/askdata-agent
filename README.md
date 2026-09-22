@@ -668,3 +668,70 @@ deepseek · deepseek-flash       当前供应商，未配置 Key 时显示 Mock 
 
 同一时刻只服务一个请求（整条链路是同步的），避免并发把会话记忆搅乱。
 异常如实返回给前端，不静默吞掉。
+
+## Schema 索引接进主链路
+
+原本 `schema_indexing` 建好 Milvus 三级索引，主链路却每次启动重扫源库——
+**模块从没被接进来过**。现在补上了：
+
+```python
+HybridSchemaRetrievalService.from_milvus(
+    uri="runtime_data/schema_index.db",
+    embedding_client=..., rerank_client=...,
+)
+```
+
+### 先说清楚：当前规模下没有性能收益
+
+动手前先量了一遍启动耗时，结果推翻了我原本的理由：
+
+```text
+建库 + 扫 Schema + 编码      0.36s     ← 我以为的瓶颈
+载入两个 bge 模型            14.98s    ← 真正的瓶颈（98%）
+```
+
+索引能省的只有那 0.36 秒，而查询时还要用 bge 编码 query、用 reranker 精排，
+**模型必须加载，一秒都省不掉**。
+
+它的价值在别处：**规模**（81 个字段编码 0.33 秒，8100 个就是 33 秒）、
+**解耦**（换库加库不用重扫）、**共享**（多个查询进程共用一份索引，而不是各建各的）。
+这些在 Demo 规模上都体现不出来。
+
+### 接的过程挖出三层问题
+
+**一、索引不是自包含的。**只存了 9 个标量字段，而 `ColumnSchema` 有 17 个。
+缺的正是 `description`、`aliases`、`samples`、`business_usage`、`value_range`——
+**恰恰是渲染进 CoT 和 SQL 提示词的业务语义**。照现状接进去，链路照样能跑，
+提示词却悄悄退化成只剩字段名和类型。修法是把完整的 `ColumnSchema` 与 `TableSchema`
+序列化成 JSON 一并存入。
+
+**二、两个模块各有一份 `TableRelation`。**字段完全相同，但只有 `schema_indexing`
+那份带 `join_condition` 和 `relation_key` 两个 property——**字段一样、行为不一样，
+类型看着兼容，一调就炸**。改成鸭子类型取值，取不到就按关联键现拼。
+
+**三、两个模块各实现了一套三级索引文本构建。**产出的文本 **81 个字段全都不一样**。
+这条最要命：光接上不校验的话，检索结果会悄悄漂移。
+
+第三条也决定了架构上谁是权威——**检索服务那一套**，因为只有它会读取
+`business_meta` 里手写的 21 条 `keyword_text` 和 15 条 `rerank_text`，
+而那些手写文本是这个项目最值钱的资产。所以索引的职责是
+**持久化检索服务的产出**，而不是自己再造一遍：
+
+```python
+builder.build(columns=..., relations=..., tables=..., documents=service.documents)
+```
+
+### 验证：不是"能加载"，而是"加载出来一模一样"
+
+```text
+keyword_text   不一致 0 个
+vector_text    不一致 0 个
+rerank_text    不一致 0 个
+向量最大差异    0.00e+00
+
+4/4 条查询的提示词上下文逐字节一致
+```
+
+这条断言写进了 [tests/test_diagnostics.py](tests/test_diagnostics.py)
+的 `SchemaIndexRoundTripTestCase`。只断言"能加载"是不够的——
+**加载成功但内容退化，正是这个项目反复踩的那类静默失败。**
