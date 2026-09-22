@@ -14,6 +14,8 @@
     python -m eval.runner
     python -m eval.runner --case E03          # 只跑一道
     python -m eval.runner --tag 纯口径词       # 只跑某类
+    python -m eval.runner --dataset chinook --meta ab --repeat 3
+                                              # 元数据消融：有/无两组逐题交错跑，输出差值
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import re
 import sqlite3
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -34,9 +37,16 @@ if __package__ in {None, ""}:
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
 from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
 from eval.cases import CASES, EvalCase  # noqa: E402
+from eval.cases_chinook import CHINOOK_CASES  # noqa: E402
 from eval.cases_extra import EXTRA_CASES  # noqa: E402
 
 ALL_CASES: List[EvalCase] = CASES + EXTRA_CASES
+
+# 数据集 → (题库, 数据库名, 默认库路径)
+DATASETS = {
+    "ecommerce": (ALL_CASES, "ecommerce_db", Path("runtime_data") / "eval_ecommerce.db"),
+    "chinook": (CHINOOK_CASES, "chinook_db", Path("runtime_data") / "chinook.db"),
+}
 
 # Schema 支撑不了时，CoT 里应该出现的措辞
 MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不支持", "不足")
@@ -426,22 +436,88 @@ STATUS_LABEL = {
 }
 
 
-def report(aggregates: List[CaseAggregate]) -> None:
-    """打印评测报告。"""
-    outcomes = aggregates
-    total = len(outcomes)
-    passed = sum(1 for item in outcomes if item.passed)
-    repeat = max((item.runs for item in outcomes), default=1)
+@dataclass
+class Summary:
+    """一次运行的四个指标，抽出来是为了给 A/B 做差。"""
 
-    must_hit_total = sum(len(item.case.must_hit_columns) for item in outcomes)
-    must_hit_matched = sum(item.schema_recall_hits for item in outcomes)
-    must_hit_total = must_hit_total or 1
+    total: int
+    passed: int
+    recall_hits: int
+    recall_total: int
+    executed: int
+    executed_pass: int
+    traps: int
+    traps_honest: int
+    elapsed: float
+    runs: int
 
-    normal = [item for item in outcomes if not item.case.expect_unanswerable]
-    traps = [item for item in outcomes if item.case.expect_unanswerable]
+    @staticmethod
+    def _rate(numerator: int, denominator: int) -> Optional[float]:
+        """分母为 0 时返回 None，而不是硬凑一个 0% 或 100%。"""
+        if not denominator:
+            return None
+        return numerator / denominator
+
+    @property
+    def recall_rate(self) -> Optional[float]:
+        return self._rate(self.recall_hits, self.recall_total)
+
+    @property
+    def execution_rate(self) -> Optional[float]:
+        return self._rate(self.executed_pass, self.executed)
+
+    @property
+    def honesty_rate(self) -> Optional[float]:
+        return self._rate(self.traps_honest, self.traps)
+
+    @property
+    def end_to_end_rate(self) -> Optional[float]:
+        return self._rate(self.passed, self.total)
+
+    @property
+    def seconds_per_run(self) -> float:
+        return self.elapsed / self.runs if self.runs else 0.0
+
+
+def summarize(aggregates: List[CaseAggregate]) -> Summary:
+    """把逐题结果压成四个指标。"""
+    traps = [item for item in aggregates if item.case.expect_unanswerable]
+    normal = [item for item in aggregates if not item.case.expect_unanswerable]
     executed = [
         item for item in normal
         if item.representative.status in {"pass", "wrong_result"}
+    ]
+
+    return Summary(
+        total=len(aggregates),
+        passed=sum(1 for item in aggregates if item.passed),
+        recall_hits=sum(item.schema_recall_hits for item in aggregates),
+        recall_total=sum(len(item.case.must_hit_columns) for item in aggregates),
+        executed=len(executed),
+        executed_pass=sum(1 for item in executed if item.passed),
+        traps=len(traps),
+        traps_honest=sum(1 for item in traps if item.passed),
+        elapsed=sum(o.elapsed for item in aggregates for o in item.outcomes),
+        runs=sum(item.runs for item in aggregates),
+    )
+
+
+def report(aggregates: List[CaseAggregate]) -> None:
+    """打印评测报告。"""
+    outcomes = aggregates
+    summary = summarize(outcomes)
+    total = summary.total
+    passed = summary.passed
+    repeat = max((item.runs for item in outcomes), default=1)
+
+    must_hit_total = summary.recall_total or 1
+    must_hit_matched = summary.recall_hits
+
+    traps = [item for item in outcomes if item.case.expect_unanswerable]
+    executed = [
+        item for item in outcomes
+        if not item.case.expect_unanswerable
+        and item.representative.status in {"pass", "wrong_result"}
     ]
 
     print("\n" + "=" * 92)
@@ -513,6 +589,26 @@ def report(aggregates: List[CaseAggregate]) -> None:
             for item in flaky:
                 print(f"    {item.case.id}  {item.passes}/{item.runs}  {item.case.query}")
             print("    抖动本身就是脆弱信号：这些题的链路某一环依赖了模型的随机输出。")
+
+    # 同一条崩溃信息反复出现，那是代码 bug，不是"准确率"。
+    #
+    # 实测踩过：换到外部数据集第一次跑，15 题里 7 题崩在同一个 NameError 上，
+    # 报告照样算出 53% 端到端。那个数字毫无意义，却长得和真实成绩一模一样——
+    # 和断网那次输出 42% 是同一种病。
+    crash_reasons: Dict[str, int] = {}
+    for item in outcomes:
+        for outcome in item.outcomes:
+            if outcome.status == "crash":
+                key = outcome.detail.split("\n")[0][:90]
+                crash_reasons[key] = crash_reasons.get(key, 0) + 1
+
+    repeated = {k: v for k, v in crash_reasons.items() if v >= 3}
+
+    if repeated:
+        print("\n  ⚠️ 检测到重复崩溃，以下数字很可能无效：")
+        for reason, count in sorted(repeated.items(), key=lambda kv: -kv[1]):
+            print(f"     {count} 次　{reason}")
+        print("     同一条异常反复出现通常是代码 bug，先修再看分数。")
 
     failures: Dict[str, int] = {}
     for item in outcomes:
@@ -588,8 +684,130 @@ def sample_status(aggregate: CaseAggregate) -> str:
     return aggregate.representative.status
 
 
+ARM_LABEL = {"full": "有元数据", "none": "无元数据"}
+
+AB_ARMS = ("none", "full")
+
+
+def build_pipeline(args, database_name: str, db_path: Path, meta_mode: str):
+    """按指定元数据档位构建一条流水线。"""
+    return AskDataText2SQLPipeline(
+        PipelineConfig(
+            dataset=args.dataset,
+            database_name=database_name,
+            db_path=db_path,
+            sample_size=5,
+            self_consistency_runs=args.self_consistency,
+            sql_repair_attempts=args.repair,
+            business_meta_mode=meta_mode,
+        )
+    )
+
+
+def pad(text: str, width: int) -> str:
+    """
+    按显示宽度补空格。
+
+    中文是双宽字符，str.ljust 按字符数补，对齐的列在终端里全是歪的。
+    """
+    shown = sum(
+        2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        for char in text
+    )
+    return text + " " * max(0, width - shown)
+
+
+def format_rate(hits: int, total: int, rate: Optional[float]) -> str:
+    """把 命中/总数 和百分比拼成一格。"""
+    if rate is None:
+        return "—"
+    return f"{hits}/{total} {rate:.0%}"
+
+
+def format_delta(before: Optional[float], after: Optional[float]) -> str:
+    """两个比率的差，按百分点给。"""
+    if before is None or after is None:
+        return "—"
+
+    points = (after - before) * 100
+    return f"{points:+.0f}pt" if abs(points) >= 0.5 else "持平"
+
+
+def report_ab(results: Dict[str, List[CaseAggregate]]) -> None:
+    """
+    A/B 对比报告。
+
+    两组的唯一差别是业务元数据的有无：同一个库、同一套题、同一份代码，
+    连跑的时间窗口都交错开（逐题 A、B 挨着跑），把接口抖动摊平。
+
+    单看某一组的绝对分数意义有限——真正想知道的是差值，
+    以及差值落在哪个环节：召回涨了但端到端没涨，说明瓶颈在生成，
+    元数据买到的只是检索；两个一起涨，才是元数据真的在起作用。
+    """
+    base, test = summarize(results["none"]), summarize(results["full"])
+
+    print("\n" + "=" * 92)
+    print(f"A/B 对比　·　{ARM_LABEL['none']} → {ARM_LABEL['full']}")
+    print("=" * 92)
+    print("  " + pad("指标", 18) + pad(ARM_LABEL["none"], 16)
+          + pad(ARM_LABEL["full"], 16) + "变化")
+
+    rows = [
+        ("Schema 召回率", base.recall_hits, base.recall_total, base.recall_rate,
+         test.recall_hits, test.recall_total, test.recall_rate),
+        ("执行准确率", base.executed_pass, base.executed, base.execution_rate,
+         test.executed_pass, test.executed, test.execution_rate),
+        ("陷阱题诚实率", base.traps_honest, base.traps, base.honesty_rate,
+         test.traps_honest, test.traps, test.honesty_rate),
+        ("端到端准确率", base.passed, base.total, base.end_to_end_rate,
+         test.passed, test.total, test.end_to_end_rate),
+    ]
+
+    for name, bh, bt, br, th, tt, tr in rows:
+        print("  " + pad(name, 18) + pad(format_rate(bh, bt, br), 16)
+              + pad(format_rate(th, tt, tr), 16) + format_delta(br, tr))
+
+    print("  " + pad("平均每次耗时", 18)
+          + pad(f"{base.seconds_per_run:.1f}s", 16)
+          + pad(f"{test.seconds_per_run:.1f}s", 16)
+          + f"{test.seconds_per_run - base.seconds_per_run:+.1f}s")
+
+    # 逐题变化才是可核查的部分：总分涨了两个点，可能是一题翻正，
+    # 也可能是三题翻正、两题翻负——后者说明元数据把别的东西搞坏了。
+    paired = list(zip(results["none"], results["full"]))
+    gained = [(b, t) for b, t in paired if not b.passed and t.passed]
+    lost = [(b, t) for b, t in paired if b.passed and not t.passed]
+
+    print("\n" + "-" * 92)
+    print(f"  翻正 {len(gained)} 题，翻负 {len(lost)} 题，"
+          f"其余 {len(paired) - len(gained) - len(lost)} 题不变")
+
+    for label, items in (("翻正", gained), ("翻负", lost)):
+        for before, after in items:
+            print(f"    {label}　{before.case.id}　"
+                  f"{before.passes}/{before.runs} → {after.passes}/{after.runs}　"
+                  f"{before.case.query}")
+            if label == "翻正":
+                print(f"{'':<10}└─ 无元数据时：{before.representative.detail[:80]}")
+
+    recall_moved = [
+        (b, t) for b, t in paired
+        if b.schema_recall_hits != t.schema_recall_hits
+    ]
+
+    if recall_moved:
+        print("\n  召回变化的题：")
+        for before, after in recall_moved:
+            total = len(before.case.must_hit_columns)
+            print(f"    {before.case.id}　{before.schema_recall_hits}/{total}"
+                  f" → {after.schema_recall_hits}/{total}　{before.case.query}")
+            if before.representative.missed_columns:
+                print(f"{'':<10}└─ 无元数据时漏召回："
+                      f"{'、'.join(before.representative.missed_columns)}")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AskData 电商数据集评测")
+    parser = argparse.ArgumentParser(description="AskData 评测")
     parser.add_argument("--case", default="", help="只跑指定题号，例如 E03")
     parser.add_argument("--tag", default="", help="只跑指定考点")
     parser.add_argument("--retries", type=int, default=2, help="瞬时故障重试次数")
@@ -610,9 +828,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="每题重复跑几次。单次运行误差约 ±5%%，对比调参效果建议 3 次以上",
     )
     parser.add_argument(
-        "--db-path",
-        default=str(Path("runtime_data") / "eval_ecommerce.db"),
+        "--dataset", default="ecommerce", choices=sorted(DATASETS),
+        help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
+    parser.add_argument(
+        "--meta", default="full", choices=["full", "none", "ab"],
+        help=(
+            "业务元数据档位。full 用手写元数据，none 整份丢掉只留字段名和样例值，"
+            "ab 两组都跑并输出对比——元数据消融实验"
+        ),
+    )
+    parser.add_argument("--db-path", default="")
     return parser
 
 
@@ -620,7 +846,8 @@ def main() -> None:
     args = build_parser().parse_args()
     logging.getLogger("askdata").disabled = True
 
-    cases: List[EvalCase] = list(ALL_CASES)
+    case_pool, database_name, default_db = DATASETS[args.dataset]
+    cases: List[EvalCase] = list(case_pool)
     if args.case:
         cases = [item for item in cases if item.id.upper() == args.case.upper()]
     if args.tag:
@@ -630,69 +857,85 @@ def main() -> None:
         print("没有匹配的题目")
         return
 
-    db_path = Path(args.db_path)
-
-    print("=" * 92)
-    print(f"AskData 评测　·　电商数据集　·　{len(cases)} 题")
-    print("=" * 92)
-
-    pipeline = AskDataText2SQLPipeline(
-        PipelineConfig(
-            dataset="ecommerce",
-            database_name="ecommerce_db",
-            db_path=db_path,
-            sample_size=5,
-            self_consistency_runs=args.self_consistency,
-            sql_repair_attempts=args.repair,
-        )
-    )
-
+    db_path = Path(args.db_path) if args.db_path else default_db
+    arms = list(AB_ARMS) if args.meta == "ab" else [args.meta]
     repeat = max(1, args.repeat)
+
+    print("=" * 92)
+    print(f"AskData 评测　·　{args.dataset}　·　{len(cases)} 题")
+    print("=" * 92)
+
+    if args.meta == "ab":
+        print(f"元数据 A/B：{ARM_LABEL['none']} vs {ARM_LABEL['full']}，"
+              f"逐题交错跑，共 {len(cases) * repeat * 2} 次运行")
+    else:
+        print(f"元数据：{ARM_LABEL[args.meta]}")
 
     if repeat > 1:
         print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
     if args.self_consistency > 1 or args.repair != 1:
         print(f"配置：自洽性投票 {args.self_consistency} 次，SQL 回调修正 {args.repair} 次")
 
-    aggregates = []
+    pipelines = {
+        arm: build_pipeline(args, database_name, db_path, arm)
+        for arm in arms
+    }
+
+    results: Dict[str, List[CaseAggregate]] = {arm: [] for arm in arms}
     consecutive_infra_failures = 0
 
     try:
         for index, case in enumerate(cases, start=1):
             print(f"  [{index}/{len(cases)}] {case.id} {case.query}", flush=True)
 
-            aggregate = CaseAggregate(case=case)
+            # 两组紧挨着跑，而不是先跑完一组再跑另一组：
+            # 否则接口在中途变慢或变笨，差值里就混进了时间因素。
+            for arm in arms:
+                aggregate = CaseAggregate(case=case)
 
-            for _ in range(repeat):
-                outcome = run_case_with_retry(pipeline, db_path, case, args.retries)
-                aggregate.outcomes.append(outcome)
+                for _ in range(repeat):
+                    outcome = run_case_with_retry(pipelines[arm], db_path, case, args.retries)
+                    aggregate.outcomes.append(outcome)
 
-                if outcome.status == "crash" and classify_error(outcome.detail) in {
-                    "persistent",
-                    "transient",
-                }:
-                    consecutive_infra_failures += 1
+                    if outcome.status == "crash" and classify_error(outcome.detail) in {
+                        "persistent",
+                        "transient",
+                    }:
+                        consecutive_infra_failures += 1
 
-                    if consecutive_infra_failures >= args.abort_after:
-                        raise EvalAborted(
-                            reason=outcome.detail,
-                            completed=index - 1,
-                            total=len(cases),
-                            consecutive=consecutive_infra_failures,
-                        )
-                else:
-                    consecutive_infra_failures = 0
+                        if consecutive_infra_failures >= args.abort_after:
+                            raise EvalAborted(
+                                reason=outcome.detail,
+                                completed=index - 1,
+                                total=len(cases),
+                                consecutive=consecutive_infra_failures,
+                            )
+                    else:
+                        consecutive_infra_failures = 0
 
-            if repeat > 1 and aggregate.stability == "flaky":
-                print(f"{'':<8}~ 抖动：{aggregate.passes}/{aggregate.runs} 通过", flush=True)
+                results[arm].append(aggregate)
 
-            aggregates.append(aggregate)
+                if len(arms) > 1:
+                    mark = "✅" if aggregate.passed else "❌"
+                    print(f"{'':<8}{ARM_LABEL[arm]}　{mark} {aggregate.passes}/{aggregate.runs}"
+                          f"　召回 {aggregate.schema_recall_hits}/"
+                          f"{len(case.must_hit_columns)}", flush=True)
+                elif repeat > 1 and aggregate.stability == "flaky":
+                    print(f"{'':<8}~ 抖动：{aggregate.passes}/{aggregate.runs} 通过", flush=True)
 
     except EvalAborted as aborted:
-        report_aborted(aborted, aggregates)
+        report_aborted(aborted, [item for arm in arms for item in results[arm]])
         sys.exit(2)
 
-    report(aggregates)
+    for arm in arms:
+        if len(arms) > 1:
+            print("\n" + "#" * 92)
+            print(f"# {ARM_LABEL[arm]}")
+            print("#" * 92)
+        report(results[arm])
+
+    if len(arms) > 1:
+        report_ab(results)
 
 
 if __name__ == "__main__":

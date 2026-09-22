@@ -23,6 +23,10 @@ from sql_generation import (
 )
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
+from .chinook_data import (
+    create_chinook_database,
+    get_chinook_business_meta,
+)
 from .ecommerce_data import (
     create_ecommerce_demo_database,
     get_ecommerce_business_meta,
@@ -128,7 +132,6 @@ class AskDataText2SQLPipeline:
         )
 
         schema_graph = retrieval_result.schema_graph
-        schema_context = schema_graph.to_prompt_context()
 
         runs = max(1, self.config.self_consistency_runs)
         attempts = [
@@ -182,11 +185,10 @@ class AskDataText2SQLPipeline:
                 emit(
                     Codes.SCHEMA_RECALL_MISS,
                     "CoT 判缺失但全量 Schema 下可以回答，实为检索漏召回，已用全量 Schema 重规划",
-                    问题=effective_query[:60],
+                    问题=contextual_query[:60],
                 )
                 cot_result = retry_result
                 schema_graph = full_graph
-                schema_context = schema_graph.to_prompt_context()
 
         schema_store = LocalSchemaStore.from_schema_graph(schema_graph)
 
@@ -460,9 +462,22 @@ class AskDataText2SQLPipeline:
         """
         按 config.dataset 准备测试库和业务元数据。
 
+        business_meta_mode="none" 时把元数据整份丢掉，只留库里自带的
+        字段名、类型和样例值——这是元数据消融实验的对照组。
+        丢弃动作放在这里统一做，三套数据集都能跑同一个对照。
+
         Returns:
             tuple: (数据库路径, 业务元数据)
         """
+        db_path, business_meta = self._load_dataset()
+
+        if (self.config.business_meta_mode or "full").strip().lower() == "none":
+            return db_path, {}
+
+        return db_path, business_meta
+
+    def _load_dataset(self):
+        """按 config.dataset 取建库函数和那套数据集自带的完整元数据。"""
         dataset = (self.config.dataset or "trade").strip().lower()
 
         if dataset == "ecommerce":
@@ -477,8 +492,15 @@ class AskDataText2SQLPipeline:
                 get_trade_business_meta(),
             )
 
+        if dataset == "chinook":
+            # 一个我没有设计的 Schema，用来测"换个陌生库还行不行"。
+            return (
+                create_chinook_database(self.config.db_path),
+                get_chinook_business_meta(),
+            )
+
         raise ValueError(
-            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce。"
+            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce / chinook。"
         )
 
     def _build_keyword_extractor(self):
