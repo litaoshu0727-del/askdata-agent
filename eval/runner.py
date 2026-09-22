@@ -129,6 +129,8 @@ class CaseOutcome:
     status: str                       # pass / wrong_result / sql_error / no_sql / crash
     hit_columns: Set[str] = field(default_factory=set)
     missed_columns: List[str] = field(default_factory=list)
+    first_pass_hits: Set[str] = field(default_factory=set)
+    first_pass_missed: List[str] = field(default_factory=list)
     generated_sql: str = ""
     detail: str = ""
     elapsed: float = 0.0
@@ -286,10 +288,19 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
     matched, missed = score_requirements(case.must_hit_columns, hit_columns)
     diagnostics = [item.code for item in result.diagnostics]
 
+    # 首轮检索单独打一遍分。schema_context 是复核之后的，拒答复核一旦触发，
+    # 它就是全库 64 个字段——拿它算召回率永远好看，检索漏没漏根本看不出来。
+    first_matched, first_missed = score_requirements(
+        case.must_hit_columns,
+        parse_hit_columns(result.retrieval_context or result.schema_context),
+    )
+
     base = dict(
         case=case,
         hit_columns=matched,
         missed_columns=missed,
+        first_pass_hits=first_matched,
+        first_pass_missed=first_missed,
         elapsed=elapsed,
         diagnostics=diagnostics,
     )
@@ -425,6 +436,19 @@ class CaseAggregate:
         """各次命中数取最大值——漏召回只要发生过就值得关注，但展示取最好情况。"""
         return max((len(item.hit_columns) for item in self.outcomes), default=0)
 
+    @property
+    def first_pass_hits(self) -> int:
+        """首轮检索（未经全量复核）的命中数，同样取最好情况。"""
+        return max((len(item.first_pass_hits) for item in self.outcomes), default=0)
+
+    @property
+    def rescued_runs(self) -> int:
+        """有几次运行是靠全量 Schema 复核救回来的。"""
+        return sum(
+            1 for item in self.outcomes
+            if "SCHEMA_RECALL_MISS" in item.diagnostics
+        )
+
 
 STATUS_LABEL = {
     "pass": "✅ 通过",
@@ -443,7 +467,9 @@ class Summary:
     total: int
     passed: int
     recall_hits: int
+    first_pass_hits: int
     recall_total: int
+    rescued_runs: int
     executed: int
     executed_pass: int
     traps: int
@@ -461,6 +487,10 @@ class Summary:
     @property
     def recall_rate(self) -> Optional[float]:
         return self._rate(self.recall_hits, self.recall_total)
+
+    @property
+    def first_pass_rate(self) -> Optional[float]:
+        return self._rate(self.first_pass_hits, self.recall_total)
 
     @property
     def execution_rate(self) -> Optional[float]:
@@ -492,7 +522,9 @@ def summarize(aggregates: List[CaseAggregate]) -> Summary:
         total=len(aggregates),
         passed=sum(1 for item in aggregates if item.passed),
         recall_hits=sum(item.schema_recall_hits for item in aggregates),
+        first_pass_hits=sum(item.first_pass_hits for item in aggregates),
         recall_total=sum(len(item.case.must_hit_columns) for item in aggregates),
+        rescued_runs=sum(item.rescued_runs for item in aggregates),
         executed=len(executed),
         executed_pass=sum(1 for item in executed if item.passed),
         traps=len(traps),
@@ -552,9 +584,17 @@ def report(aggregates: List[CaseAggregate]) -> None:
     print("\n" + "=" * 92)
     print("指标")
     print("=" * 92)
+    print(f"  首轮检索召回率   {summary.first_pass_hits}/{must_hit_total}"
+          f"　{summary.first_pass_hits / must_hit_total:.0%}　"
+          f"（检索这一轮就召回了，没靠全量复核兜底）")
+
     print(f"  Schema 召回率    {must_hit_matched}/{must_hit_total}"
           f"　{must_hit_matched / must_hit_total:.0%}　"
-          f"（该命中的字段有没有被召回 → 检索环节）")
+          f"（最终进 Prompt 的 Schema 里有没有 → 含复核兜底）")
+
+    if summary.rescued_runs:
+        print(f"  其中复核救回     {summary.rescued_runs}/{summary.runs} 次运行"
+              f"　（首轮漏召回，靠全量 Schema 重规划补上）")
 
     if executed:
         exec_pass = sum(1 for item in executed if item.passed)
@@ -753,6 +793,8 @@ def report_ab(results: Dict[str, List[CaseAggregate]]) -> None:
           + pad(ARM_LABEL["full"], 16) + "变化")
 
     rows = [
+        ("首轮检索召回率", base.first_pass_hits, base.recall_total, base.first_pass_rate,
+         test.first_pass_hits, test.recall_total, test.first_pass_rate),
         ("Schema 召回率", base.recall_hits, base.recall_total, base.recall_rate,
          test.recall_hits, test.recall_total, test.recall_rate),
         ("执行准确率", base.executed_pass, base.executed, base.execution_rate,
@@ -766,6 +808,11 @@ def report_ab(results: Dict[str, List[CaseAggregate]]) -> None:
     for name, bh, bt, br, th, tt, tr in rows:
         print("  " + pad(name, 18) + pad(format_rate(bh, bt, br), 16)
               + pad(format_rate(th, tt, tr), 16) + format_delta(br, tr))
+
+    print("  " + pad("复核救回次数", 18)
+          + pad(f"{base.rescued_runs}/{base.runs} 次", 16)
+          + pad(f"{test.rescued_runs}/{test.runs} 次", 16)
+          + f"{test.rescued_runs - base.rescued_runs:+d} 次")
 
     print("  " + pad("平均每次耗时", 18)
           + pad(f"{base.seconds_per_run:.1f}s", 16)
@@ -792,18 +839,29 @@ def report_ab(results: Dict[str, List[CaseAggregate]]) -> None:
 
     recall_moved = [
         (b, t) for b, t in paired
-        if b.schema_recall_hits != t.schema_recall_hits
+        if b.first_pass_hits != t.first_pass_hits
     ]
 
     if recall_moved:
-        print("\n  召回变化的题：")
+        print("\n  首轮检索召回变化的题：")
         for before, after in recall_moved:
             total = len(before.case.must_hit_columns)
-            print(f"    {before.case.id}　{before.schema_recall_hits}/{total}"
-                  f" → {after.schema_recall_hits}/{total}　{before.case.query}")
-            if before.representative.missed_columns:
-                print(f"{'':<10}└─ 无元数据时漏召回："
-                      f"{'、'.join(before.representative.missed_columns)}")
+            print(f"    {before.case.id}　{before.first_pass_hits}/{total}"
+                  f" → {after.first_pass_hits}/{total}　{before.case.query}")
+            missed = before.representative.first_pass_missed
+            if missed:
+                print(f"{'':<10}└─ 无元数据时首轮漏召回：{'、'.join(missed)}")
+
+    rescue_moved = [
+        (b, t) for b, t in paired
+        if b.rescued_runs != t.rescued_runs
+    ]
+
+    if rescue_moved:
+        print("\n  复核兜底次数变化的题（数字越小，说明检索这一轮越靠得住）：")
+        for before, after in rescue_moved:
+            print(f"    {before.case.id}　{before.rescued_runs}/{before.runs}"
+                  f" → {after.rescued_runs}/{after.runs}　{before.case.query}")
 
 
 def build_parser() -> argparse.ArgumentParser:

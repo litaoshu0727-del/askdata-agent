@@ -88,6 +88,15 @@ class PipelineResult:
     与 query 相同或为空表示没有发生改写。
     """
 
+    retrieval_context: str = ""
+    """
+    **首轮检索**交出来的 Schema，没经过全量复核。
+
+    与 schema_context 的差别只在拒答复核触发时才显现：那时 schema_context
+    已经被换成全库 64 个字段，拿它算召回率，等于在问"全量 Schema 里有没有
+    这个字段"——答案恒为是。检索到底漏没漏，只有首轮这份看得见。
+    """
+
     diagnostics: List[Diagnostic] = field(default_factory=list)
     """
     本次运行发生的静默降级记录。
@@ -103,6 +112,7 @@ class PipelineResult:
             "rewritten_query": self.rewritten_query,
             "keywords": self.keywords,
             "schema_context": self.schema_context,
+            "retrieval_context": self.retrieval_context,
             "cot_output": self.cot_output,
             "diagnostics": [item.render() for item in self.diagnostics],
             "step_logs": [

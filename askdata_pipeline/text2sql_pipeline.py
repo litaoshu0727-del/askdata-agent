@@ -133,6 +133,10 @@ class AskDataText2SQLPipeline:
 
         schema_graph = retrieval_result.schema_graph
 
+        # 先把首轮检索的结果留一份。下面的拒答复核可能把 schema_graph
+        # 整个换成全量 Schema，换完就再也看不出检索这一轮漏了什么。
+        retrieval_context = schema_graph.to_prompt_context()
+
         runs = max(1, self.config.self_consistency_runs)
         attempts = [
             self._plan_and_execute(contextual_query, schema_graph)
@@ -146,6 +150,7 @@ class AskDataText2SQLPipeline:
             rewritten_query=rewrite.rewritten if rewrite.changed else "",
             keywords=resolved_keywords,
             schema_context=schema_graph.to_prompt_context(),
+            retrieval_context=retrieval_context,
             cot_output=cot_result.raw_output,
             step_logs=step_logs,
             diagnostics=self.setup_diagnostics + list(diagnostics),
