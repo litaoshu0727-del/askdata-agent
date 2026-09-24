@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
@@ -79,6 +79,40 @@ class HybridSchemaRetrievalConfig:
 
     dominant_keyword_min_score: float = 8.0
     """保送的绝对分数下限，避免在整体分数都很低时误保送。"""
+
+    dominant_keyword_strong_ratio: float = 2.0
+    """
+    绝对强命中判定：分数达到 min_score 的这个倍数、**且该字段所属的表整张
+    都不在命中集里**时，不要求断层也算压倒性。
+
+    断层判据有个盲区——**第二名往往是第一名的同义近邻**。实测 E24
+    「北京用户一共下了多少笔订单」，BM25 在 dim_user.city 上打 17.52 分、
+    在 dim_user.province 上打 16.08 分，比值 1.09：两个字段的索引文本
+    高度重合，分数天然咬得死紧，谁也甩不开谁 3 倍，于是谁都不算压倒性。
+    没有元数据时更极端，dim_user.city 和 dim_shop.city 同为 10.55 分，
+    比值正好 1.00。
+
+    但 17.52 这个绝对分数本身就是强证据：这个词的词面几乎全落在这个字段的
+    索引文本里。所以补一条不依赖断层的判据，专门救这类被同义词压住的字段。
+
+    "整表缺失"这个前提是实测加上的：不加限制时补回从 3 题次涨到 34 题次，
+    ecommerce 首轮召回 93% → 99%，但抖动题 7 道 → 12 道、单次波动 1 题 → 7 题。
+    往已经在图里的表上再塞字段几乎没有收益，而 E24 的真实病灶是 dim_user
+    **整张表**从图里消失了——连 JOIN 都做不了。
+
+    设成 0 可关闭这条判据，只保留断层判据。
+    """
+
+    dominant_keyword_tie_ratio: float = 0.85
+    """
+    并列阈值：分数在第一名这个比例之上的字段，视为同一概念的近邻，一起保送。
+
+    既然分不清"北京"指的是 city 还是 province，两个都给模型，
+    比赌一个、错一个好——代价只是 SchemaGraph 多一列。
+
+    断层触发时这条不起作用：真断层意味着第二名远在 0.85 倍之下，
+    保送集自然只有第一名，行为与改动前一致。
+    """
 
     max_dominant_per_query: int = 4
     """单次查询最多保送几个字段，防止保送集喧宾夺主。"""
@@ -364,13 +398,26 @@ class HybridSchemaRetrievalService:
             schema_graph=schema_graph,
         )
 
-    def _find_dominant_keyword_docs(self, keywords: Sequence[str]) -> List[int]:
+    def _find_dominant_keyword_docs(
+        self,
+        keywords: Sequence[str],
+        covered_tables: Optional[Set[str]] = None,
+    ) -> List[int]:
         """
         找出字面命中压倒性的字段下标。
 
-        判据是"分数断层"而不是绝对分数：排第一、且大幅甩开第二名。
+        主判据是"分数断层"而不是绝对分数：排第一、且大幅甩开第二名。
         断层意味着这个词几乎只可能在说这一个字段——"直播间"除了下单渠道
         没有别的解释，"标价"除了 list_price 也没有。
+
+        断层判据有个盲区：第二名往往是第一名的同义近邻，分数天然咬得死紧。
+        所以补一条强命中判据，但**只在这个字段所属的表整张都不在命中集里时**
+        才出手——见 dominant_keyword_strong_ratio 的说明。
+
+        Args:
+            keywords: 本次查询的关键词。
+            covered_tables: 当前命中集已经覆盖的表名。强命中判据要用它来判断
+                "这张表是不是整张被挤掉了"。不传时视为空集。
         """
         if self.config.dominant_keyword_ratio <= 0:
             return []
@@ -378,7 +425,10 @@ class HybridSchemaRetrievalService:
         dominant: List[int] = []
 
         for keyword in keywords:
-            hits = self.keyword_index.search(keyword, top_k=2)
+            hits = self.keyword_index.search(
+                keyword,
+                top_k=max(2, self.config.max_dominant_per_query + 1),
+            )
 
             if not hits:
                 continue
@@ -390,10 +440,52 @@ class HybridSchemaRetrievalService:
 
             runner_up = hits[1][1] if len(hits) > 1 else 0.0
 
-            # 第二名为 0 时视为绝对断层
-            if runner_up <= 0 or top_score >= runner_up * self.config.dominant_keyword_ratio:
+            # 判据一：断层。甩开第二名 N 倍，说明这个词几乎只可能在说这一个字段。
+            # 这条与原实现完全一致，只补第一名。
+            if (
+                runner_up <= 0
+                or top_score >= runner_up * self.config.dominant_keyword_ratio
+            ):
                 if top_index not in dominant:
                     dominant.append(top_index)
+                continue
+
+            # 判据二：强命中 + 整表缺失。
+            #
+            # 只在这两个条件同时成立时出手，因为往一张已经在图里的表上再塞字段，
+            # 收益微乎其微、噪声实打实：实测放开这个限制后，补回从 3 题次涨到
+            # 34 题次，首轮召回 93% → 99%，但抖动题从 7 道涨到 12 道。
+            # 真正致命的是整张表被挤掉——那时连 JOIN 都做不了。
+            if self.config.dominant_keyword_strong_ratio <= 0:
+                continue
+
+            strong_floor = (
+                self.config.dominant_keyword_min_score
+                * self.config.dominant_keyword_strong_ratio
+            )
+
+            if top_score < strong_floor:
+                continue
+
+            top_table = self.documents[top_index].column.table_name
+
+            if top_table in (covered_tables or set()):
+                continue
+
+            # 这张表一个字段都没进来，把并列的近邻一并补回：
+            # 分不清"北京"说的是 city 还是 province，两个都给，
+            # 比赌一个错一个好。只收同一张表的，别顺手把别的表拖进来。
+            tie_floor = top_score * self.config.dominant_keyword_tie_ratio
+
+            for index, score in hits:
+                if score < tie_floor:
+                    break
+
+                if self.documents[index].column.table_name != top_table:
+                    continue
+
+                if index not in dominant:
+                    dominant.append(index)
 
         return dominant[: self.config.max_dominant_per_query]
 
@@ -408,7 +500,10 @@ class HybridSchemaRetrievalService:
         这是对 RRF 丢失强度信息的补偿，和 include_join_columns / include_label_columns
         属于同一类做法：检索管线会漏掉某些"本该在里面"的字段，就在出口处补回来。
         """
-        dominant_indices = self._find_dominant_keyword_docs(keywords)
+        dominant_indices = self._find_dominant_keyword_docs(
+            keywords=keywords,
+            covered_tables={hit.column.table_name for hit in schema_hits},
+        )
 
         if not dominant_indices:
             return schema_hits
