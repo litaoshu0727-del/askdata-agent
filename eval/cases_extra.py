@@ -379,4 +379,249 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["陷阱题"],
         note="只有 age_group 年龄段，没有精确年龄。最容易被将就着答的一题",
     ),
+    # ------------------------------------------------------------------
+    # F 组：筛选与指标分表
+    #
+    # 加这一组的起因是 E24 的追查（见 README「追查 E24」）：精排是逐字段
+    # 打分的，没有"这组字段合起来能不能回答问题"的概念。当筛选条件和指标
+    # 分属不同的表时，它会把名额全押给语义最近的那一张——而那张表往往
+    # 答不了问题，因为缺的正是筛选维度。
+    #
+    # 前 50 题测不出这件事：首轮召回已经 94%，67 个必中字段只剩 4 个没召回，
+    # E24 几乎是唯一的整表缺失案例。一个测不出差别的题库，改进和退步长得一样。
+    #
+    # 所以这一组每道题都刻意把筛选和指标拆到不同表上，并且尽量让"看起来最相关
+    # 的那张表"答不了题。
+    # ------------------------------------------------------------------
+    EvalCase(
+        id="E51",
+        query="上海的店铺卖给北京用户的已完成订单，实付金额合计是多少",
+        reference_sql="""
+            SELECT ROUND(SUM(o.pay_amount), 2) AS amt
+            FROM fact_order o
+            JOIN dim_shop s ON s.shop_id = o.shop_id
+            JOIN dim_user u ON u.user_id = o.user_id
+            WHERE s.city = '上海'
+              AND u.city = '北京'
+              AND o.order_status = '已完成'
+        """,
+        must_hit_columns=[
+            "dim_shop.city",
+            "dim_user.city",
+            "fact_order.pay_amount",
+            "fact_order.order_status",
+        ],
+        tags=["多跳JOIN", "同名字段干扰", "筛选与指标分表", "金额字段辨析"],
+        note=(
+            "一次把两个 city 都考了：店铺所在地和用户所在地必须同时召回、"
+            "而且不能张冠李戴。只召回一个就会算出一个看起来合理的错数字。"
+            "\n"
+            "原来没写「已完成」，结果这题本身不可判分：模型加了 "
+            "pay_time IS NOT NULL（只算真付过款的），得 75502.68，"
+            "参考答案 76944.06。两个数都对——「实付金额」到底算不算"
+            "待支付和已取消的订单，题目没说。限定已完成之后两种写法结果一致，"
+            "因为已完成订单的 pay_time 全部非空。"
+        ),
+    ),
+    EvalCase(
+        id="E52",
+        query="直播间下单的金卡会员，一共退了多少钱",
+        reference_sql="""
+            SELECT ROUND(SUM(r.refund_amount), 2) AS amt
+            FROM fact_refund r
+            JOIN fact_order o ON o.order_id = r.order_id
+            JOIN dim_user u ON u.user_id = o.user_id
+            WHERE o.channel = '直播间' AND u.member_level = '金卡会员'
+        """,
+        must_hit_columns=[
+            "fact_order.channel",
+            "dim_user.member_level",
+            "fact_refund.refund_amount",
+        ],
+        tags=["多跳JOIN", "筛选与指标分表", "枚举值匹配", "纯口径词"],
+        note="三张表各出一个字段：两个筛选条件分别在 fact_order 和 dim_user，指标在 fact_refund",
+    ),
+    EvalCase(
+        id="E53",
+        query="美妆护肤类目的商品一共被加购了多少次",
+        reference_sql="""
+            SELECT COUNT(*) AS cnt
+            FROM fact_user_behavior b
+            JOIN dim_product p ON p.product_id = b.product_id
+            JOIN dim_category c ON c.category_id = p.category_id
+            WHERE b.behavior_type = '加购'
+              AND (c.parent_category_id = 1 OR c.category_id = 1)
+        """,
+        must_hit_columns=[
+            "dim_product.category_id",
+            "fact_user_behavior.behavior_type",
+            ["dim_category.category_name", "dim_category.parent_category_id"],
+        ],
+        tags=["多跳JOIN", "层级类目", "筛选与指标分表", "枚举值匹配"],
+        note=(
+            "类目筛选要走父子关系（商品挂在二级类目上），行为筛选要按 behavior_type，"
+            "指标是行为表的计数——三样缺一不可"
+        ),
+    ),
+    EvalCase(
+        id="E54",
+        query="因为商品质量问题退款的订单，分别来自哪些城市的店铺，各有多少笔",
+        reference_sql="""
+            SELECT s.city, COUNT(*) AS cnt
+            FROM fact_refund r
+            JOIN fact_order o ON o.order_id = r.order_id
+            JOIN dim_shop s ON s.shop_id = o.shop_id
+            WHERE r.refund_reason = '商品质量问题'
+            GROUP BY s.city
+        """,
+        must_hit_columns=["fact_refund.refund_reason", "dim_shop.city"],
+        tags=["多跳JOIN", "筛选与指标分表", "分组统计", "同名字段干扰"],
+        note=(
+            "筛选条件在事实表、输出维度在维表，检索容易只召回一头。"
+            "city 还要选店铺那个，不是用户那个"
+        ),
+    ),
+    EvalCase(
+        id="E55",
+        query="5月下旬（21日到月底）上海店铺的销售额，减去上旬（1日到10日）的差值是多少",
+        reference_sql="""
+            SELECT ROUND(
+                SUM(CASE WHEN d.stat_date >= '2024-05-21' THEN d.gmv ELSE 0 END)
+                - SUM(CASE WHEN d.stat_date <= '2024-05-10' THEN d.gmv ELSE 0 END),
+                2
+            ) AS diff
+            FROM dws_shop_daily d
+            JOIN dim_shop s ON s.shop_id = d.shop_id
+            WHERE s.city = '上海'
+        """,
+        must_hit_columns=[
+            ["dws_shop_daily.gmv", "fact_order.order_amount"],
+            ["dws_shop_daily.stat_date", "fact_order.create_time"],
+            "dim_shop.city",
+        ],
+        tags=["区间对比", "筛选与指标分表", "多跳JOIN", "纯口径词"],
+        note=(
+            "两条路径都对：走 dws 汇总层或走 fact 明细层，实测差值都是 -18479.5。"
+            "答案是负数，写反了符号就露馅"
+        ),
+    ),
+    EvalCase(
+        id="E56",
+        query="浏览过商品但从来没有下过单的用户有多少人",
+        reference_sql="""
+            SELECT COUNT(*) AS cnt FROM (
+                SELECT DISTINCT b.user_id
+                FROM fact_user_behavior b
+                WHERE b.behavior_type = '浏览'
+                  AND b.user_id NOT IN (SELECT user_id FROM fact_order)
+            )
+        """,
+        must_hit_columns=[
+            ["fact_user_behavior.behavior_type", "fact_user_behavior.user_id"],
+            "fact_order.user_id",
+        ],
+        tags=["嵌套聚合", "筛选与指标分表", "多跳JOIN"],
+        note="反连接：两张事实表的 user_id 都要召回，缺一头就无从下手",
+    ),
+    EvalCase(
+        id="E57",
+        query=(
+            "已完成订单里，金卡会员和钻石会员贡献的实付金额占全部已完成订单的"
+            "百分之多少（返回0到100之间的数）"
+        ),
+        reference_sql="""
+            SELECT ROUND(
+                100.0 * SUM(
+                    CASE WHEN u.member_level IN ('金卡会员', '钻石会员')
+                    THEN o.pay_amount ELSE 0 END
+                ) / SUM(o.pay_amount),
+                2
+            ) AS pct
+            FROM fact_order o
+            JOIN dim_user u ON u.user_id = o.user_id
+            WHERE o.order_status = '已完成'
+        """,
+        must_hit_columns=[
+            "fact_order.order_status",
+            "dim_user.member_level",
+            "fact_order.pay_amount",
+        ],
+        tags=["条件聚合", "比率计算", "筛选与指标分表", "多跳JOIN"],
+        note="分子的筛选条件在维表、分母的范围在事实表，两个条件不能混成一个",
+    ),
+    EvalCase(
+        id="E58",
+        query="用微信支付的订单里，有多少笔发生过退款",
+        reference_sql="""
+            SELECT COUNT(DISTINCT r.order_id) AS cnt
+            FROM fact_refund r
+            JOIN fact_payment p ON p.order_id = r.order_id
+            WHERE p.pay_channel = '微信支付'
+        """,
+        must_hit_columns=[
+            "fact_payment.pay_channel",
+            ["fact_refund.order_id", "fact_refund.refund_id"],
+        ],
+        tags=["多跳JOIN", "筛选与指标分表", "枚举值匹配", "同名字段干扰"],
+        note=(
+            "两张事实表直接对撞，中间没有维表。"
+            "pay_channel 是支付渠道，fact_order.channel 是下单渠道，取错就全错"
+        ),
+    ),
+    EvalCase(
+        id="E59",
+        query="5月1日到7日、5月24日到30日，直播间各有多少笔订单",
+        reference_sql="""
+            SELECT
+                CASE WHEN date(create_time) BETWEEN '2024-05-01' AND '2024-05-07'
+                     THEN '第一周' ELSE '最后一周' END AS seg,
+                COUNT(*) AS cnt
+            FROM fact_order
+            WHERE channel = '直播间'
+              AND (date(create_time) BETWEEN '2024-05-01' AND '2024-05-07'
+                   OR date(create_time) BETWEEN '2024-05-24' AND '2024-05-30')
+            GROUP BY seg
+        """,
+        must_hit_columns=["fact_order.create_time", "fact_order.channel"],
+        tags=["区间对比", "时间过滤", "枚举值匹配"],
+        note="两个不相连的时间窗口各算一次，中间那两周要排除掉",
+    ),
+    EvalCase(
+        id="E60",
+        query="在售商品的平均标价，减去已下架商品的平均标价，差值是多少",
+        reference_sql="""
+            SELECT ROUND(
+                AVG(CASE WHEN shelf_status = '在售' THEN list_price END)
+                - AVG(CASE WHEN shelf_status = '已下架' THEN list_price END),
+                2
+            ) AS diff
+            FROM dim_product
+        """,
+        must_hit_columns=["dim_product.shelf_status", "dim_product.list_price"],
+        tags=["条件聚合", "单表聚合", "枚举值匹配"],
+        note=(
+            "同一列上按条件算两个平均值再相减。"
+            "答案是负数——在售商品的均价其实比已下架的低，拍脑袋会写错方向"
+        ),
+    ),
+    EvalCase(
+        id="E61",
+        query="2024年注册的用户一共下了多少笔订单",
+        reference_sql="""
+            SELECT COUNT(*) AS cnt
+            FROM fact_order o
+            JOIN dim_user u ON u.user_id = o.user_id
+            WHERE strftime('%Y', u.register_time) = '2024'
+        """,
+        must_hit_columns=[
+            "dim_user.register_time",
+            ["fact_order.order_id", "fact_order.user_id"],
+        ],
+        tags=["筛选与指标分表", "时间过滤", "多跳JOIN"],
+        note=(
+            "时间条件在维表（注册时间）、指标在事实表。"
+            "检索天然偏向 fact_order.create_time，一旦把它当成时间条件，"
+            "算出来就是「2024年下的单」——数字合理、口径全错"
+        ),
+    ),
 ]
