@@ -950,6 +950,10 @@ def main() -> None:
             print(f"{args.dataset} 没有留出集（eval/cases_holdout.py 不存在或为空）")
             return
 
+        # 封存提醒：这套题已经跑过一次。再拿它验证调优效果，它就不再是留出集了。
+        print("⚠️ 这套留出集已封存（首次运行见 README）。照着它的失败改过系统之后，"
+              "再用它得出的分数不能当作泛化能力的证据。")
+
     cases: List[EvalCase] = list(case_pool)
     if args.case:
         cases = [item for item in cases if item.id.upper() == args.case.upper()]
