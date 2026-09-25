@@ -525,9 +525,15 @@ def _dimension_business_meta() -> dict:
                     "keyword_text": "category_name 类目名称 品类名称 类目 品类 美妆护肤 数码电器 食品生鲜 面部护肤 手机通讯",
                 },
                 "parent_category_id": {
-                    "description": "父级类目ID，一级类目该字段为空。",
-                    "aliases": ["父类目ID", "上级类目"],
+                    "description": (
+                        "父级类目ID，一级类目该字段为空，二级类目通过它指向所属的一级类目。"
+                    ),
+                    "aliases": ["父类目ID", "上级类目", "一级类目"],
                     "semantic_role": "join_key",
+                    "business_usage": (
+                        "按一级类目汇总商品数据时的上卷路径：商品只挂二级类目，"
+                        "要经本字段把二级类目关联回一级类目（dim_category 自关联）。"
+                    ),
                 },
                 "category_level": {
                     "description": "类目层级，1 为一级类目，2 为二级类目。",
@@ -605,10 +611,24 @@ def _dimension_business_meta() -> dict:
                     "keyword_text": "product_name 商品名称 商品名 货品名称 商品 叫什么 哪个商品 哪些商品 商品排行 爆款",
                 },
                 "category_id": {
-                    "description": "商品所属类目ID。",
+                    "description": (
+                        "商品所属的**二级**类目ID。商品只挂在二级类目上，从不直接挂一级类目——"
+                        "拿它去关联「美妆护肤」这类一级类目，结果永远是空的。"
+                    ),
                     "aliases": ["类目ID", "商品类目"],
                     "semantic_role": "join_key",
-                    "business_usage": "按类目分析销售时的关联键。",
+                    "business_usage": (
+                        "按二级类目分析时直接关联 dim_category。"
+                        "按一级类目（美妆护肤、数码电器、食品生鲜）分析时要上卷两次："
+                        "先用本字段关联 dim_category 得到二级类目，"
+                        "再用二级类目的 parent_category_id 关联 dim_category 得到一级类目（类目表自关联）。"
+                    ),
+                    "rerank_text": (
+                        "字段：dim_product.category_id。含义：商品所属的二级类目ID，商品不直接挂一级类目。"
+                        "用途：按类目分析商品、销售、行为时的关联键。"
+                        "注意：按一级类目汇总必须经 dim_category.parent_category_id 自关联上卷，"
+                        "直接关联一级类目会得到空结果。"
+                    ),
                 },
                 "shop_id": {
                     "description": "商品所属店铺ID。",
@@ -971,14 +991,25 @@ def _fact_business_meta() -> dict:
             },
         },
         "dws_shop_daily": {
-            "description": "店铺日汇总表，由订单事实表按天聚合而来，记录每个店铺每天的 GMV、实付金额、订单量、买家数、退款金额和支付转化率。做店铺经营日报时用这张表。",
+            "description": (
+                "店铺日汇总表，由订单事实表按**下单日期**聚合而来，记录每个店铺每天的 GMV、"
+                "实付金额、订单量、买家数、退款金额和支付转化率。做店铺经营日报时用这张表。"
+                "注意：表里所有指标都归属到订单的下单日期，包括退款——"
+                "某天的 refund_amount 是「那天下的订单后来产生的退款」，不是「那天发生的退款」。"
+            ),
             "aliases": ["店铺日汇总表", "店铺日报表", "店铺日指标表"],
             "columns": {
                 "stat_date": {
-                    "description": "统计日期，粒度为天。",
+                    "description": (
+                        "统计日期，粒度为天，取的是订单的下单日期（fact_order.create_time 的日期部分）。"
+                        "本表所有指标都按这个日期归属。"
+                    ),
                     "aliases": ["统计日期", "日期", "数据日期"],
                     "semantic_role": "time",
-                    "business_usage": "按天筛选或分组时使用。",
+                    "business_usage": (
+                        "按天筛选或分组订单类指标时使用。"
+                        "按退款发生时间筛选退款时不能用它，要用 fact_refund.apply_time 或 finish_time。"
+                    ),
                     "keyword_text": "stat_date 统计日期 日期 数据日期 按天 每天 日报",
                 },
                 "shop_id": {
@@ -1014,9 +1045,25 @@ def _fact_business_meta() -> dict:
                     "business_usage": "衡量店铺的客流规模。",
                 },
                 "refund_amount": {
-                    "description": "店铺当日退款金额合计。",
+                    "description": (
+                        "按订单下单日期归属的退款金额：当天下的订单后来产生的退款合计，"
+                        "**不是当天实际发生的退款**。全量合计与 fact_refund.refund_amount 相等，"
+                        "但按日期切分的结果完全不同。"
+                    ),
                     "aliases": ["退款金额", "日退款金额"],
                     "semantic_role": "metric",
+                    "business_usage": (
+                        "适合按店铺算累计退款、退款率这类不按时间切分的指标。"
+                        "问「某段时间内发生了多少退款」要用 fact_refund.refund_amount，"
+                        "按 apply_time（申请时间）或 finish_time（完成时间）筛选。"
+                    ),
+                    "rerank_text": (
+                        "字段：dws_shop_daily.refund_amount。含义：按订单下单日期归属的退款金额，"
+                        "是当天下的订单后来产生的退款，不是当天发生的退款。"
+                        "用途：按店铺算累计退款、退款率。"
+                        "区别：按退款发生时间切分（某段时间退了多少钱）要用 fact_refund.refund_amount "
+                        "配合 apply_time 或 finish_time，不能用本字段配 stat_date。"
+                    ),
                 },
                 "conversion_rate": {
                     "description": "店铺当日支付转化率，口径为已支付买家数除以下单买家数，取值为 0 到 1 之间的小数。",

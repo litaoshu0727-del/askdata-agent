@@ -239,7 +239,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["嵌套聚合", "比率计算"], note="占比要用百分数，分母是全部用户",
     ),
     EvalCase(
-        id="E36", query="退款金额占销售额比例最高的店铺是哪家",
+        id="E36", query="退款金额占销售额比例最高的店铺是哪家，只返回店铺名称",
         reference_sql="""
             SELECT s.shop_name
             FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id
@@ -251,14 +251,26 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["嵌套聚合", "比率计算", "跨表关联"], note="两个聚合相除再排序",
     ),
     EvalCase(
-        id="E37", query="转化率低于全店平均的店铺有多少家",
+        id="E37",
+        query=(
+            "每家店铺把各天的转化率取平均作为该店转化率，"
+            "低于全部店铺全部天数转化率平均值的店铺有多少家"
+        ),
         reference_sql="""
             SELECT COUNT(*) AS v FROM (
                 SELECT shop_id, AVG(conversion_rate) AS r FROM dws_shop_daily GROUP BY shop_id
             ) t WHERE t.r < (SELECT AVG(conversion_rate) FROM dws_shop_daily)
         """,
         must_hit_columns=["dws_shop_daily.conversion_rate"],
-        tags=["嵌套聚合"], note="两层聚合",
+        tags=["嵌套聚合"],
+        note=(
+            "两层聚合。原问法「转化率低于全店平均的店铺有多少家」没法判分——"
+            "实测有 5 种说得通的算法，答案分别是 5 / 7 / 15 / 124 / 15："
+            "店铺日均 vs 全部店-天平均（参考答案）、店铺日均 vs 各店日均的平均、"
+            "按买家数重算每店转化率、逐行比较数店-天、逐行比较后按店去重。"
+            "模型每次挑一种，挑中第一种才算对，repeat 5 下 0/5。现在问法里把两个"
+            "「平均」各是什么都写死了"
+        ),
     ),
     EvalCase(
         id="E38", query="单笔实付金额最高的那笔订单是哪个用户下的",
@@ -321,7 +333,7 @@ EXTRA_CASES: List[EvalCase] = [
     ),
     EvalCase(
         id="E44",
-        query="5月下旬（21日至月底）的退款金额比上旬（1日至10日）多多少，只返回差值",
+        query="按退款申请时间算，5月下旬（21日至月底）的退款金额比上旬（1日至10日）多多少，只返回差值",
         reference_sql="""
             SELECT ROUND(
                 SUM(CASE WHEN DATE(apply_time) BETWEEN '2024-05-21' AND '2024-05-31'
@@ -337,6 +349,11 @@ EXTRA_CASES: List[EvalCase] = [
             "问法里写明了旬的起止日期——原来的版本只写“上旬/下旬”，"
             "而我自己把参考答案写成了前半月/后半月（中文历法上旬是1-10不是1-15），"
             "模型用对了口径反被判错。"
+            "\n"
+            "后来又补了「按退款申请时间算」：按申请时间是 268979.27，"
+            "按完成时间是 269772.91，两种都说得通。另外 dws_shop_daily.refund_amount "
+            "按订单下单日归属，不是退款发生日，走那条路径会得到 83341.19——"
+            "这是元数据的锅，见 dws_shop_daily 的字段说明"
         ),
     ),
     EvalCase(
@@ -570,21 +587,27 @@ EXTRA_CASES: List[EvalCase] = [
     ),
     EvalCase(
         id="E59",
-        query="5月1日到7日、5月24日到30日，直播间各有多少笔订单",
+        query="5月24日到30日直播间的订单，比5月1日到7日多多少笔，只返回差值",
         reference_sql="""
             SELECT
-                CASE WHEN date(create_time) BETWEEN '2024-05-01' AND '2024-05-07'
-                     THEN '第一周' ELSE '最后一周' END AS seg,
-                COUNT(*) AS cnt
+                SUM(CASE WHEN date(create_time) BETWEEN '2024-05-24' AND '2024-05-30'
+                         THEN 1 ELSE 0 END)
+              - SUM(CASE WHEN date(create_time) BETWEEN '2024-05-01' AND '2024-05-07'
+                         THEN 1 ELSE 0 END) AS diff
             FROM fact_order
             WHERE channel = '直播间'
-              AND (date(create_time) BETWEEN '2024-05-01' AND '2024-05-07'
-                   OR date(create_time) BETWEEN '2024-05-24' AND '2024-05-30')
-            GROUP BY seg
         """,
         must_hit_columns=["fact_order.create_time", "fact_order.channel"],
         tags=["区间对比", "时间过滤", "枚举值匹配"],
-        note="两个不相连的时间窗口各算一次，中间那两周要排除掉",
+        note=(
+            "两个不相连的时间窗口各算一次，中间那两周要排除掉。"
+            "\n"
+            "原问法「5月1日到7日、5月24日到30日，直播间各有多少笔订单」没法判分："
+            "参考 SQL 给两段打的标签是我随手编的「第一周 / 最后一周」，"
+            "模型写的是「5月1日到7日 / 5月24日到30日」，43 和 49 两个数分毫不差，"
+            "却因为标签字符串对不上被判错，repeat 5 下 0/5。"
+            "改成问差值，答案收敛成一个数（49 - 43 = 6）"
+        ),
     ),
     EvalCase(
         id="E60",
