@@ -35,6 +35,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
+from mcp_router.sqlite_executor import unique_column_names  # noqa: E402
 from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
 from eval.cases import CASES, EvalCase  # noqa: E402
 from eval.cases_chinook import CHINOOK_CASES  # noqa: E402
@@ -269,11 +270,13 @@ def score_requirements(
 def load_expected(db_path: Path, case: EvalCase) -> List[Dict[str, Any]]:
     """执行参考 SQL，得到标准答案。"""
     conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
 
     try:
-        rows = conn.execute(case.reference_sql).fetchall()
-        return [dict(row) for row in rows]
+        # 和执行器同样的取法。原先是 dict(row)，参考 SQL 里一旦有同名列，
+        # 期望答案就会少几列——141 道题里目前没有一道撞上，但裁判不能带着这个坑。
+        cursor = conn.execute(case.reference_sql)
+        columns = unique_column_names([item[0] for item in (cursor.description or [])])
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
     finally:
         conn.close()
 

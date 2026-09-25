@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+# 单元测试在隔离环境下运行：不读 .env，不调真实模型。必须写在导入项目模块之前。
+import os  # noqa: E402
+
+os.environ["ASKDATA_DISABLE_DOTENV"] = "1"
+for _key in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "ASKDATA_LOCAL_MODELS"):
+    os.environ.pop(_key, None)
+
+import logging  # noqa: E402
+
+logging.getLogger("askdata").disabled = True
+
+import sqlite3  # noqa: E402
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+import unittest  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from eval.cases import EvalCase  # noqa: E402
+from eval.runner import load_expected  # noqa: E402
+from mcp_router.objects import MCPExecutionRequest  # noqa: E402
+from mcp_router.sqlite_executor import SQLiteMCPExecutor, unique_column_names  # noqa: E402
+
+SELF_JOIN = (
+    "SELECT e.FirstName, e.LastName, m.FirstName, m.LastName "
+    "FROM Employee e JOIN Employee m ON e.ReportsTo = m.EmployeeId "
+    "ORDER BY e.EmployeeId"
+)
+
+
+class SqliteExecutorColumnsTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / "hr.db"
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "CREATE TABLE Employee (EmployeeId INTEGER, FirstName TEXT, LastName TEXT, ReportsTo INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO Employee VALUES (?, ?, ?, ?)",
+            [
+                (1, "Andrew", "Adams", None),
+                (2, "Nancy", "Edwards", 1),
+                (3, "Jane", "Peacock", 2),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        self.executor = SQLiteMCPExecutor(database="hr_db", db_path=self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_sql(self, sql):
+        return self.executor.execute(MCPExecutionRequest(database="hr_db", sql=sql))
+
+    def test_self_join_keeps_all_four_columns(self):
+        """HB14 的形态：两个 FirstName、两个 LastName，上级的名字不能丢。"""
+        result = self.run_sql(SELF_JOIN)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.columns, ["FirstName", "LastName", "FirstName_2", "LastName_2"])
+        self.assertEqual(
+            [tuple(row.values()) for row in result.rows],
+            [("Nancy", "Edwards", "Andrew", "Adams"), ("Jane", "Peacock", "Nancy", "Edwards")],
+        )
+
+    def test_columns_match_row_keys(self):
+        result = self.run_sql(SELF_JOIN)
+        self.assertEqual(list(result.rows[0].keys()), result.columns)
+
+    def test_query_without_duplicates_is_unchanged(self):
+        """没有同名列的查询，结果和原先 dict(row) 的写法逐字相同。"""
+        result = self.run_sql("SELECT EmployeeId, FirstName FROM Employee ORDER BY EmployeeId")
+        self.assertEqual(result.columns, ["EmployeeId", "FirstName"])
+        self.assertEqual(
+            result.rows,
+            [
+                {"EmployeeId": 1, "FirstName": "Andrew"},
+                {"EmployeeId": 2, "FirstName": "Nancy"},
+                {"EmployeeId": 3, "FirstName": "Jane"},
+            ],
+        )
+
+    def test_empty_result_still_reports_columns(self):
+        result = self.run_sql("SELECT FirstName, LastName FROM Employee WHERE 0")
+        self.assertTrue(result.success)
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.columns, ["FirstName", "LastName"])
+
+    def test_reference_answers_keep_duplicate_columns_too(self):
+        """裁判那一侧：参考答案同样不能因为同名列少几列。"""
+        case = EvalCase(id="T01", query="", reference_sql=SELF_JOIN)
+        expected = load_expected(self.db, case)
+        self.assertEqual(
+            [tuple(row.values()) for row in expected],
+            [("Nancy", "Edwards", "Andrew", "Adams"), ("Jane", "Peacock", "Nancy", "Edwards")],
+        )
+
+
+class UniqueColumnNamesTest(unittest.TestCase):
+    def test_duplicates_get_suffixes(self):
+        self.assertEqual(
+            unique_column_names(["a", "b", "a", "a"]),
+            ["a", "b", "a_2", "a_3"],
+        )
+
+    def test_suffix_never_collides_with_a_real_column(self):
+        """本来就有一列叫 a_2 时，生成的名字要绕开它。"""
+        self.assertEqual(
+            unique_column_names(["a", "a_2", "a"]),
+            ["a", "a_2", "a_3"],
+        )
+        names = unique_column_names(["x", "x", "x_2"])
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_no_duplicates_passes_through(self):
+        self.assertEqual(unique_column_names(["id", "name"]), ["id", "name"])
+
+
+if __name__ == "__main__":
+    unittest.main()
