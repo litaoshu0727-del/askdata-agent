@@ -973,9 +973,9 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank == "holdout":
-        # 封存提醒：这套题已经跑过一次。再拿它验证调优效果，它就不再是留出集了。
-        print("⚠️ 这套留出集已封存（首次运行见 README）。照着它的失败改过系统之后，"
+    if args.bank in {"holdout", "holdout2"}:
+        # 提醒：这两套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
+        print(f"⚠️ {args.bank} 已经用过（见 README）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
 
     cases: List[EvalCase] = list(case_pool)
