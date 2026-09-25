@@ -114,8 +114,17 @@ def get_chinook_business_meta() -> dict:
        字段名却是 Artist.Name、Playlist.Name、Invoice.Total。
     2. description 写清近义字段的差别。Track.UnitPrice 是目录标价，
        InvoiceLine.UnitPrice 是成交时的价格快照，两者可以不相等。
-    3. 只给最容易混的字段手写 keyword_text / rerank_text，
-       其余交给 document_builder 自动生成。
+    3. 只给最容易混的字段手写 keyword_text，其余交给自动生成。
+
+    **精排文本（rerank_text）一条都不手写**，辨析内容写进 description 和
+    business_usage，由默认构建器统一生成。原因是实测出来的：
+
+    手写的 rerank_text 会**整个替换**默认文本，而默认文本里带着表描述、别名、
+    用途和样例值。最初给 23 个字段手写了精排文本，平均 105 字，没有一条带表描述。
+    结果 Employee.FirstName（手写，79 字，一半篇幅在讲 Customer.FirstName）
+    在「2003年入职的员工」这类问题上精排排到 16~18 / 20 名，被整个砍掉；
+    同表的 Employee.LastName（没手写，默认文本 294 字，表描述里有"员工""入职""姓名"）
+    稳定排前三。手写的精排文本比自动生成的还差。
     """
     meta = {}
     meta.update(_catalog_business_meta())
@@ -152,17 +161,13 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["艺术家", "艺术家名称", "歌手", "歌手名", "艺人", "乐队", "乐队名"],
                     "semantic_role": "output_dimension",
-                    "business_usage": "艺术家排行、艺术家明细的展示字段。",
+                    "business_usage": (
+                        "艺术家排行、艺术家明细的展示字段。"
+                        "五张表都有 Name 字段：本字段是艺术家（歌手、乐队）名；Track.Name 是歌名、Album.Title 是专辑名、Genre.Name 是流派名、Playlist.Name 是歌单名、MediaType.Name 是文件格式名。"
+                    ),
                     "keyword_text": (
                         "Artist.Name 艺术家 艺术家名称 歌手 歌手名字 艺人 乐队 乐队名 表演者 "
                         "哪位艺术家 哪个歌手 艺术家叫什么 AC/DC Aerosmith Accept"
-                    ),
-                    "rerank_text": (
-                        "字段：Artist.Name。含义：艺术家（歌手 / 乐队）的名字。"
-                        "用途：问“哪位艺术家、哪个歌手、艺术家叫什么名字”时输出它。"
-                        "区别：Track.Name 是歌名，Album.Title 是专辑名，"
-                        "Genre.Name 是流派名，Playlist.Name 是歌单名，"
-                        "MediaType.Name 是文件格式名——五张表都有 Name，这个才是人名/团名。"
                     ),
                 },
             },
@@ -186,14 +191,12 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["专辑名", "专辑名称", "唱片名", "专辑标题"],
                     "semantic_role": "output_dimension",
-                    "business_usage": "专辑排行、专辑明细的展示字段。",
+                    "business_usage": (
+                        "专辑排行、专辑明细的展示字段。"
+                        "问艺术家叫什么要取 Artist.Name，不是专辑名。"
+                    ),
                     "keyword_text": (
                         "Album.Title 专辑 专辑名 专辑名称 唱片名 专辑标题 哪张专辑 专辑叫什么"
-                    ),
-                    "rerank_text": (
-                        "字段：Album.Title。含义：专辑名称。"
-                        "区别：Employee.Title 是员工职位（General Manager 等），不是标题；"
-                        "问艺术家叫什么应取 Artist.Name，不是专辑名。"
                     ),
                 },
                 "ArtistId": {
@@ -225,14 +228,12 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["曲目", "曲目名称", "歌名", "歌曲名", "单曲名", "音轨名"],
                     "semantic_role": "output_dimension",
-                    "business_usage": "曲目排行、曲目明细的展示字段。",
+                    "business_usage": (
+                        "曲目排行、曲目明细的展示字段。"
+                        "本字段是歌名；Artist.Name 是艺术家名、Album.Title 是专辑名、Genre.Name 是流派名、Playlist.Name 是歌单名。"
+                    ),
                     "keyword_text": (
                         "Track.Name 曲目 曲目名称 歌名 歌曲名 单曲 音轨名 哪首歌 哪首曲目 歌曲叫什么"
-                    ),
-                    "rerank_text": (
-                        "字段：Track.Name。含义：曲目名称（歌名）。"
-                        "区别：Artist.Name 是艺术家名，Genre.Name 是流派名，"
-                        "Playlist.Name 是歌单名，Album.Title 是专辑名。问歌名才取这个。"
                     ),
                 },
                 "AlbumId": {
@@ -268,10 +269,6 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["作曲", "作曲者", "词曲作者", "创作者"],
                     "semantic_role": "dimension",
-                    "rerank_text": (
-                        "字段：Track.Composer。含义：作曲者，自由文本。"
-                        "边界：不是外键，无法关联到 Artist；作曲者 ≠ 演唱的艺术家。"
-                    ),
                 },
                 "Milliseconds": {
                     "description": (
@@ -283,11 +280,6 @@ def _catalog_business_meta() -> dict:
                     "business_usage": "按流派、专辑、艺术家汇总总时长时使用；除以 1000 得秒，除以 60000 得分钟。",
                     "keyword_text": (
                         "Track.Milliseconds 时长 曲目时长 歌曲长度 播放时长 总时长 毫秒 多长 多少毫秒"
-                    ),
-                    "rerank_text": (
-                        "字段：Track.Milliseconds。含义：曲目时长，单位毫秒。"
-                        "用途：求总时长、平均时长、最长的曲目。"
-                        "边界：是音频长度，不是播放次数，也不是累计播放时间。"
                     ),
                 },
                 "Bytes": {
@@ -306,11 +298,6 @@ def _catalog_business_meta() -> dict:
                     "business_usage": "问“曲目卖多少钱、单价最高多少”时用它；问某张发票里的成交价用 InvoiceLine.UnitPrice。",
                     "keyword_text": (
                         "Track.UnitPrice 曲目单价 单价 标价 定价 售价 价格 曲目价格 多少钱 最贵 最高单价"
-                    ),
-                    "rerank_text": (
-                        "字段：Track.UnitPrice。含义：曲目的目录标价（0.99 / 1.99）。"
-                        "区别：InvoiceLine.UnitPrice 是下单时写进明细行的成交单价，"
-                        "问“曲目定价/曲目单价”取本字段，问“这笔明细卖了多少钱”取 InvoiceLine 那个。"
                     ),
                 },
             },
@@ -335,16 +322,13 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["流派", "流派名称", "曲风", "音乐类型", "音乐风格", "类型名称"],
                     "semantic_role": "output_dimension",
-                    "business_usage": "流派维度的展示与筛选字段。",
+                    "business_usage": (
+                        "流派维度的展示与筛选字段。"
+                        "本字段是流派名；Track.Name 是歌名、MediaType.Name 是文件格式名、Playlist.Name 是歌单名。"
+                    ),
                     "keyword_text": (
                         "Genre.Name 流派 流派名称 曲风 音乐类型 音乐风格 每个流派 按流派 "
                         "Rock 摇滚 Jazz 爵士 Metal 金属 Latin Pop"
-                    ),
-                    "rerank_text": (
-                        "字段：Genre.Name。含义：音乐流派名称（Rock、Jazz、Metal……）。"
-                        "用途：按流派分组统计时的输出名称，按流派筛选时的过滤字段。"
-                        "区别：Track.Name 是歌名，MediaType.Name 是文件格式名，"
-                        "Playlist.Name 是歌单名——问“流派/曲风”才是这一个。"
                     ),
                 },
             },
@@ -369,11 +353,7 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["媒体格式", "文件格式", "媒体类型", "编码格式"],
                     "semantic_role": "output_dimension",
-                    "rerank_text": (
-                        "字段：MediaType.Name。含义：音频/视频文件的编码格式名称。"
-                        "区别：问“音乐类型/曲风/流派”指的是 Genre.Name，不是本字段；"
-                        "本字段只在问文件格式、编码方式时使用。"
-                    ),
+                    "business_usage": "只在问文件格式、编码方式时使用；问音乐类型、曲风、流派要取 Genre.Name。",
                 },
             },
         },
@@ -393,11 +373,7 @@ def _catalog_business_meta() -> dict:
                     "description": "歌单名称，例如 Music、Movies、90’s Music。",
                     "aliases": ["歌单", "歌单名称", "播放列表", "播放列表名称"],
                     "semantic_role": "output_dimension",
-                    "rerank_text": (
-                        "字段：Playlist.Name。含义：歌单（播放列表）的名称。"
-                        "区别：Track.Name 是歌名，Genre.Name 是流派名。"
-                        "边界：歌单只是收录关系，不代表被播放过。"
-                    ),
+                    "business_usage": "本字段是歌单名；Track.Name 是歌名、Genre.Name 是流派名。歌单只是收录关系，不代表被播放过。",
                 },
             },
         },
@@ -423,11 +399,6 @@ def _catalog_business_meta() -> dict:
                     ),
                     "aliases": ["曲目ID"],
                     "semantic_role": "join_key",
-                    "rerank_text": (
-                        "字段：PlaylistTrack.TrackId。含义：歌单收录了哪首曲目。"
-                        "边界：计数结果是“被多少个歌单收录”，"
-                        "不能当作播放次数或收听量——本库不存在播放行为数据。"
-                    ),
                 },
             },
         },
@@ -475,11 +446,6 @@ def _sales_business_meta() -> dict:
                         "Customer.FirstName 客户 顾客 买家 客户姓名 客户的名 名字 "
                         "哪个客户 客户是谁 消费最多的客户"
                     ),
-                    "rerank_text": (
-                        "字段：Customer.FirstName。含义：客户的名。"
-                        "用途：问“哪位客户、客户叫什么”时输出。"
-                        "区别：Employee.FirstName 是员工的名——问客户取本表，问员工取那张表。"
-                    ),
                 },
                 "LastName": {
                     "description": "客户的姓（family name），例如 Gonçalves。Employee.LastName 是员工的姓。",
@@ -487,10 +453,6 @@ def _sales_business_meta() -> dict:
                     "semantic_role": "output_dimension",
                     "keyword_text": (
                         "Customer.LastName 客户 顾客 买家 客户姓 姓氏 客户姓名 哪个客户 客户是谁"
-                    ),
-                    "rerank_text": (
-                        "字段：Customer.LastName。含义：客户的姓。"
-                        "区别：Employee.LastName 是员工的姓。问客户的姓名取 Customer 这一对。"
                     ),
                 },
                 "Company": {
@@ -515,11 +477,6 @@ def _sales_business_meta() -> dict:
                     "keyword_text": (
                         "Customer.City 客户城市 客户所在城市 客户 顾客 买家 城市 客户分布 客户在哪些城市"
                     ),
-                    "rerank_text": (
-                        "字段：Customer.City。含义：客户所在城市。"
-                        "区别：Employee.City 是员工所在城市，Invoice.BillingCity 是开票城市。"
-                        "问“客户分布在哪些城市”取本字段。"
-                    ),
                 },
                 "State": {
                     "description": "客户所在州/省，可为空。",
@@ -540,12 +497,6 @@ def _sales_business_meta() -> dict:
                     "keyword_text": (
                         "Customer.Country 客户国家 客户所在国家 客户 顾客 买家 国家 "
                         "客户分布 客户来自哪些国家 地区分布"
-                    ),
-                    "rerank_text": (
-                        "字段：Customer.Country。含义：客户所在国家。"
-                        "区别：Employee.Country 是员工所在国家；"
-                        "Invoice.BillingCountry 是这张发票的开票国家，做销售额地域分析用那个。"
-                        "问“客户分布在哪些国家”才取本字段。"
                     ),
                 },
                 "PostalCode": {
@@ -609,10 +560,6 @@ def _sales_business_meta() -> dict:
                     "aliases": ["员工名", "员工姓名", "名字"],
                     "semantic_role": "output_dimension",
                     "keyword_text": "Employee.FirstName 员工 雇员 职员 员工名 员工姓名 哪个员工 员工是谁",
-                    "rerank_text": (
-                        "字段：Employee.FirstName。含义：员工的名。"
-                        "区别：Customer.FirstName 是客户的名。问员工取本表，问客户取 Customer。"
-                    ),
                 },
                 "Title": {
                     "description": (
@@ -625,10 +572,6 @@ def _sales_business_meta() -> dict:
                     "keyword_text": (
                         "Employee.Title 职位 岗位 职务 头衔 员工职位 经理 主管 "
                         "General Manager Sales Manager Sales Support Agent"
-                    ),
-                    "rerank_text": (
-                        "字段：Employee.Title。含义：员工的职位名称。"
-                        "区别：Album.Title 是专辑名称，和职位毫无关系。"
                     ),
                 },
                 "ReportsTo": {
@@ -643,11 +586,6 @@ def _sales_business_meta() -> dict:
                         "Employee.ReportsTo 上级 直属上级 汇报 汇报对象 向上汇报 "
                         "上下级 组织层级 管理者 下属"
                     ),
-                    "rerank_text": (
-                        "字段：Employee.ReportsTo。含义：直属上级的员工 ID，指向本表自身。"
-                        "用途：判断员工有没有上级、统计谁向谁汇报、还原组织层级。"
-                        "取值：NULL 表示没有上级。"
-                    ),
                 },
                 "BirthDate": {
                     "description": (
@@ -658,11 +596,6 @@ def _sales_business_meta() -> dict:
                     "aliases": ["出生日期", "生日", "员工生日"],
                     "semantic_role": "time",
                     "keyword_text": "Employee.BirthDate 出生日期 生日 年龄 员工生日 员工年龄 多少岁",
-                    "rerank_text": (
-                        "字段：Employee.BirthDate。含义：员工的出生日期。"
-                        "边界：这是员工的，不是客户的。客户表没有出生日期也没有年龄字段，"
-                        "问“客户的年龄”应判定为 Schema 缺失。"
-                    ),
                 },
                 "HireDate": {
                     "description": "员工入职日期。",
@@ -685,11 +618,7 @@ def _sales_business_meta() -> dict:
                         "Employee.City 员工城市 员工所在城市 员工 雇员 职员 城市 "
                         "员工分布 员工在哪些城市"
                     ),
-                    "rerank_text": (
-                        "字段：Employee.City。含义：员工所在城市。"
-                        "区别：Customer.City 是客户所在城市，Invoice.BillingCity 是开票城市。"
-                        "问“员工分布在哪些城市”取本字段。"
-                    ),
+                    "business_usage": "问员工分布在哪些城市时取本字段；Customer.City 是客户所在城市，Invoice.BillingCity 是开票城市。",
                 },
                 "State": {
                     "description": "员工所在州/省，本库全为 AB。",
@@ -759,15 +688,13 @@ def _sales_business_meta() -> dict:
                     ),
                     "aliases": ["开票日期", "开票时间", "下单时间", "购买时间", "交易时间", "日期"],
                     "semantic_role": "time",
-                    "business_usage": "SQLite 里用 strftime('%Y', InvoiceDate) 取年份做年度统计。",
+                    "business_usage": (
+                        "SQLite 里用 strftime('%Y', InvoiceDate) 取年份做年度统计。"
+                        "Employee.HireDate（入职日期）和 Employee.BirthDate（出生日期）都不是交易时间。"
+                    ),
                     "keyword_text": (
                         "Invoice.InvoiceDate 开票日期 开票时间 下单时间 购买时间 交易时间 "
                         "日期 年份 哪一年 每年 按月 时间范围"
-                    ),
-                    "rerank_text": (
-                        "字段：Invoice.InvoiceDate。含义：发票开具日期，本库唯一的业务时间字段。"
-                        "用途：按年/月筛选或分组做销售分析，取年份用 strftime('%Y', InvoiceDate)。"
-                        "区别：Employee.HireDate 是入职日期、BirthDate 是出生日期，都不是交易时间。"
                     ),
                 },
                 "BillingAddress": {
@@ -806,12 +733,6 @@ def _sales_business_meta() -> dict:
                         "Invoice.BillingCountry 开票国家 账单国家 销售国家 国家 "
                         "按国家 各国 哪个国家 销售额最高的国家 开票金额"
                     ),
-                    "rerank_text": (
-                        "字段：Invoice.BillingCountry。含义：这张发票的开票国家。"
-                        "用途：按国家汇总开票金额、找销售额最高的国家——与 Total 同表，无需 join。"
-                        "区别：Customer.Country 是客户登记的国家，"
-                        "Employee.Country 是员工所在国家。"
-                    ),
                 },
                 "BillingPostalCode": {
                     "description": "开票邮编。",
@@ -826,16 +747,13 @@ def _sales_business_meta() -> dict:
                     ),
                     "aliases": ["金额", "总金额", "发票金额", "开票金额", "销售额", "营收", "消费金额", "订单金额"],
                     "semantic_role": "measure",
-                    "business_usage": "按客户、国家、时间汇总销售额时求和；不需要再 join 明细表重算。",
+                    "business_usage": (
+                        "按客户、国家、时间汇总销售额时求和；不需要再 join 明细表重算。"
+                        "Track.UnitPrice 是曲目标价，InvoiceLine.UnitPrice 是明细行成交单价，都不是发票总额。"
+                    ),
                     "keyword_text": (
                         "Invoice.Total 金额 总金额 发票金额 开票金额 销售额 营收 收入 "
                         "消费金额 消费总额 花了多少钱 合计 总计 最高金额"
-                    ),
-                    "rerank_text": (
-                        "字段：Invoice.Total。含义：单张发票的总金额（明细行金额之和）。"
-                        "用途：销售额、营收、客户消费总额、各国开票金额，都对它求和。"
-                        "区别：Track.UnitPrice 是曲目标价，"
-                        "InvoiceLine.UnitPrice 是单行成交单价，两者都不是发票总额。"
                     ),
                 },
             },
@@ -887,15 +805,12 @@ def _sales_business_meta() -> dict:
                     ),
                     "aliases": ["成交单价", "明细单价", "成交价", "单价"],
                     "semantic_role": "measure",
-                    "business_usage": "算某首曲目/某个流派的销售额：SUM(UnitPrice * Quantity)。",
+                    "business_usage": (
+                        "算某首曲目/某个流派的销售额：SUM(UnitPrice * Quantity)。"
+                        "也可以直接对 Invoice.Total 求和得到发票层面的金额。"
+                    ),
                     "keyword_text": (
                         "InvoiceLine.UnitPrice 成交单价 成交价 明细单价 单价 销售额 卖了多少钱"
-                    ),
-                    "rerank_text": (
-                        "字段：InvoiceLine.UnitPrice。含义：明细行的成交单价（价格快照）。"
-                        "区别：Track.UnitPrice 是曲目的目录标价。"
-                        "问“曲目定价多少”取 Track 那个；"
-                        "算“卖了多少钱”用本字段乘 Quantity，或直接用 Invoice.Total。"
                     ),
                 },
                 "Quantity": {

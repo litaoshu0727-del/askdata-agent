@@ -514,45 +514,51 @@ class AskDataText2SQLPipeline:
         """
         dataset = (self.config.dataset or "trade").strip().lower()
 
-        if dataset == "ecommerce":
-            # 81 个字段的大库：放大召回窗口，给精排留足候选。
+        if dataset == "trade":
+            # 两张表 9 个字段的小库，保持原有参数。
             return HybridSchemaRetrievalConfig(
-                per_keyword_top_k=30,
+                per_keyword_top_k=20,
                 include_join_columns=True,
                 rrf_config=RRFFusionConfig(
                     rrf_k=60,
                     truncate_multiplier=6,
-                    min_fused_top_k=20,
-                    max_fused_top_k=80,
-                    final_top_k=60,
+                    min_fused_top_k=10,
+                    max_fused_top_k=50,
+                    final_top_k=20,
                     route_weights={
                         "keyword": 1.0,
                         "vector": 1.0,
                     },
                 ),
-                rerank_top_multiplier=6,
-                rerank_min_top_n=10,
-                rerank_max_top_n=30,
+                rerank_top_multiplier=2,
+                rerank_min_top_n=2,
+                rerank_max_top_n=20,
             )
 
-        # trade 库字段少，保持原有参数。
+        # 其余一律按大库参数：放大召回窗口，给精排留足候选。
+        #
+        # 以前是反过来的——只有 ecommerce 显式放大，其余落进默认的小库参数。
+        # Chinook（11 张表 64 个字段）接入时没人记得加分支，于是悄悄用了
+        # 9 个字段的 trade 库的参数：2 个关键词只留 4 个精排名额，
+        # 「2022年一共开了多少张发票」里排第 7 的 InvoiceDate 就这么被砍掉了。
+        # 默认值应该是安全的那一个——新接入的库，宁可候选多一点，也别悄悄漏字段。
         return HybridSchemaRetrievalConfig(
-            per_keyword_top_k=20,
+            per_keyword_top_k=30,
             include_join_columns=True,
             rrf_config=RRFFusionConfig(
                 rrf_k=60,
                 truncate_multiplier=6,
-                min_fused_top_k=10,
-                max_fused_top_k=50,
-                final_top_k=20,
+                min_fused_top_k=20,
+                max_fused_top_k=80,
+                final_top_k=60,
                 route_weights={
                     "keyword": 1.0,
                     "vector": 1.0,
                 },
             ),
-            rerank_top_multiplier=2,
-            rerank_min_top_n=2,
-            rerank_max_top_n=20,
+            rerank_top_multiplier=6,
+            rerank_min_top_n=10,
+            rerank_max_top_n=30,
         )
 
     def _prepare_dataset(self):

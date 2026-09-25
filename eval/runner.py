@@ -68,6 +68,26 @@ HOLDOUT_BANKS = {
     "chinook": HOLDOUT_CHINOOK_CASES,
 }
 
+# 第二套留出集：只有 Chinook。
+#
+# 第一套被拿来诊断过（Chinook 员工题的精排问题就是从它的失败里查出来的），
+# 已经不能再用来验证那次修改。这一套由另一个盲写出题人编写，
+# 对修改前、修改后两个版本都是没见过的题——两者的差值才是修改在陌生问题上的效果。
+try:
+    from eval.cases_holdout2 import HOLDOUT2_CHINOOK_CASES  # noqa: E402
+except ImportError:
+    HOLDOUT2_CHINOOK_CASES = []
+
+HOLDOUT2_BANKS = {
+    "ecommerce": [],
+    "chinook": HOLDOUT2_CHINOOK_CASES,
+}
+
+BANKS = {
+    "holdout": HOLDOUT_BANKS,
+    "holdout2": HOLDOUT2_BANKS,
+}
+
 # Schema 支撑不了时，CoT 里应该出现的措辞
 MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不支持", "不足")
 
@@ -924,8 +944,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout"],
-        help="题库。main 是调优用的主题库，holdout 是没见过失败情况就写好的留出集",
+        "--bank", default="main", choices=["main", "holdout", "holdout2"],
+        help=(
+            "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
+            "holdout2 是第二套 Chinook 盲写留出集"
+        ),
     )
     parser.add_argument(
         "--meta", default="full", choices=["full", "none", "ab"],
@@ -944,12 +967,13 @@ def main() -> None:
 
     case_pool, database_name, default_db = DATASETS[args.dataset]
 
-    if args.bank == "holdout":
-        case_pool = HOLDOUT_BANKS[args.dataset]
+    if args.bank != "main":
+        case_pool = BANKS[args.bank][args.dataset]
         if not case_pool:
-            print(f"{args.dataset} 没有留出集（eval/cases_holdout.py 不存在或为空）")
+            print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
+    if args.bank == "holdout":
         # 封存提醒：这套题已经跑过一次。再拿它验证调优效果，它就不再是留出集了。
         print("⚠️ 这套留出集已封存（首次运行见 README）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
@@ -969,7 +993,7 @@ def main() -> None:
     repeat = max(1, args.repeat)
 
     print("=" * 92)
-    bank_label = "　·　留出集" if args.bank == "holdout" else ""
+    bank_label = {"holdout": "　·　留出集", "holdout2": "　·　留出集二"}.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
     print("=" * 92)
 
