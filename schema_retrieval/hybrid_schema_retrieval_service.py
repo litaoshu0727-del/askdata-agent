@@ -80,10 +80,13 @@ class HybridSchemaRetrievalConfig:
     dominant_keyword_min_score: float = 8.0
     """保送的绝对分数下限，避免在整体分数都很低时误保送。"""
 
-    dominant_keyword_strong_ratio: float = 2.0
+    keyword_coverage_top_k: int = 3
     """
-    绝对强命中判定：分数达到 min_score 的这个倍数、**且该字段所属的表整张
-    都不在命中集里**时，不要求断层也算压倒性。
+    覆盖判据：一个关键词的前 K 个**同级**强命中里，如果一个都没进最终结果，
+    就把它的第一名补回来。0 表示关闭这条判据。
+
+    "同级"由 dominant_keyword_tie_ratio 界定，这是这条判据的关键——
+    见下面 E51 的例子。K 只是个上限，真正起作用的是同级这个条件。
 
     断层判据有个盲区——**第二名往往是第一名的同义近邻**。实测 E24
     「北京用户一共下了多少笔订单」，BM25 在 dim_user.city 上打 17.52 分、
@@ -92,15 +95,35 @@ class HybridSchemaRetrievalConfig:
     没有元数据时更极端，dim_user.city 和 dim_shop.city 同为 10.55 分，
     比值正好 1.00。
 
-    但 17.52 这个绝对分数本身就是强证据：这个词的词面几乎全落在这个字段的
-    索引文本里。所以补一条不依赖断层的判据，专门救这类被同义词压住的字段。
+    断层判据问的是"这个词是不是只可能指这一个字段"，覆盖判据问的是另一件事：
+    **"这个词有没有人替它说话"**。两者互补——
 
-    "整表缺失"这个前提是实测加上的：不加限制时补回从 3 题次涨到 34 题次，
-    ecommerce 首轮召回 93% → 99%，但抖动题 7 道 → 12 道、单次波动 1 题 → 7 题。
-    往已经在图里的表上再塞字段几乎没有收益，而 E24 的真实病灶是 dim_user
-    **整张表**从图里消失了——连 JOIN 都做不了。
+        断层    精度导向，某个字段证据压倒性，别让精排淘汰它
+        覆盖    召回导向，某个检索意图一个代表都没有，至少给它留一个位置
 
-    设成 0 可关闭这条判据，只保留断层判据。
+    E24「北京用户一共下了多少笔订单」就是后者：『北京用户』的前三名
+    （dim_user.city / province / dim_shop.city）一个都没进最终结果，
+    12 个名额全被另一个关键词『订单笔数』带来的 dws 汇总层字段占满了。
+
+    **判据的关键是"代表必须同级"。**两个实测教训：
+
+    其一，『北京用户』的完整召回集里还有 fact_order.user_id（7.92 分），
+    而它恰好进了最终集——按"召回集有任意交集就算有代表"来判，E24 反而不触发。
+    召回集每路 20 个、彼此重叠严重，只有前几名才代表这个词真正指向什么。
+
+    其二，E51『已完成订单』的第一名 fact_order.order_status 打 22.01 分却没入选，
+    入选的是 fact_order.finish_time（10.09，不到一半）。要是把它算作代表，
+    这个词同样被判定为"有人说话了"——而模型接下来干的正是拿
+    finish_time IS NOT NULL 去凑"已完成"，算出 59436.98（参考 44149.54），
+    降级记录一条都没有。沾边的近义字段不是代表，只有同级的才是。
+    """
+
+    dominant_keyword_tie_expand: bool = True
+    """
+    补回第一名时，是否把同表并列的近邻一起带上。
+
+    分不清"北京"说的是 city 还是 province，两个都给，比赌一个错一个好——
+    代价只是 SchemaGraph 多一列。并列的判定见 dominant_keyword_tie_ratio。
     """
 
     dominant_keyword_tie_ratio: float = 0.85
@@ -401,7 +424,7 @@ class HybridSchemaRetrievalService:
     def _find_dominant_keyword_docs(
         self,
         keywords: Sequence[str],
-        covered_tables: Optional[Set[str]] = None,
+        covered_columns: Optional[Set[tuple]] = None,
     ) -> List[int]:
         """
         找出字面命中压倒性的字段下标。
@@ -410,14 +433,14 @@ class HybridSchemaRetrievalService:
         断层意味着这个词几乎只可能在说这一个字段——"直播间"除了下单渠道
         没有别的解释，"标价"除了 list_price 也没有。
 
-        断层判据有个盲区：第二名往往是第一名的同义近邻，分数天然咬得死紧。
-        所以补一条强命中判据，但**只在这个字段所属的表整张都不在命中集里时**
-        才出手——见 dominant_keyword_strong_ratio 的说明。
+        断层判据有个盲区：第二名往往是第一名的同义近邻，分数天然咬得死紧，
+        谁也甩不开谁 3 倍，于是谁都不算压倒性。所以补一条覆盖判据——
+        见 keyword_coverage_top_k 的说明。
 
         Args:
             keywords: 本次查询的关键词。
-            covered_tables: 当前命中集已经覆盖的表名。强命中判据要用它来判断
-                "这张表是不是整张被挤掉了"。不传时视为空集。
+            covered_columns: 当前命中集已覆盖的 (表名, 字段名)。覆盖判据要用它
+                判断"这个关键词有没有人替它说话"。不传时视为空集。
         """
         if self.config.dominant_keyword_ratio <= 0:
             return []
@@ -450,31 +473,56 @@ class HybridSchemaRetrievalService:
                     dominant.append(top_index)
                 continue
 
-            # 判据二：强命中 + 整表缺失。
+            # 判据二：覆盖。这个关键词的前 K 个强命中，一个都没进最终结果。
             #
-            # 只在这两个条件同时成立时出手，因为往一张已经在图里的表上再塞字段，
-            # 收益微乎其微、噪声实打实：实测放开这个限制后，补回从 3 题次涨到
-            # 34 题次，首轮召回 93% → 99%，但抖动题从 7 道涨到 12 道。
-            # 真正致命的是整张表被挤掉——那时连 JOIN 都做不了。
-            if self.config.dominant_keyword_strong_ratio <= 0:
+            # 问的不是"这个字段够不够重要"，而是"这个检索意图有没有人替它说话"。
+            # E24 里『北京用户』的前三名全军覆没，12 个名额被另一个关键词
+            # 『订单笔数』带来的 dws 汇总层字段占满——筛选意图整个丢了。
+            coverage_top_k = self.config.keyword_coverage_top_k
+
+            if coverage_top_k <= 0:
                 continue
 
-            strong_floor = (
-                self.config.dominant_keyword_min_score
-                * self.config.dominant_keyword_strong_ratio
+            covered = covered_columns or set()
+
+            # 代表必须和第一名**同级**。
+            #
+            # E51「已完成订单」：order_status 打 22.01 分却没入选，
+            # 入选的是 finish_time（10.09，不到一半）。要是把它算作代表，
+            # 这个词就被判定为"有人说话了"——而模型接下来干的正是拿
+            # finish_time IS NOT NULL 去凑"已完成"，算出一个零告警的错数字。
+            # 沾边的近义字段不是代表，只有同级的才是。
+            representative_floor = max(
+                self.config.dominant_keyword_min_score,
+                top_score * self.config.dominant_keyword_tie_ratio,
             )
 
-            if top_score < strong_floor:
+            leaders = [
+                (index, score)
+                for index, score in hits[:coverage_top_k]
+                if score >= representative_floor
+            ]
+
+            if not leaders:
                 continue
 
+            def column_key(index: int) -> tuple:
+                column = self.documents[index].column
+                return (column.table_name, column.column_name)
+
+            if any(column_key(index) in covered for index, _ in leaders):
+                continue
+
+            if top_index not in dominant:
+                dominant.append(top_index)
+
+            if not self.config.dominant_keyword_tie_expand:
+                continue
+
+            # 并列的同表近邻一起补回：分不清"北京"说的是 city 还是 province，
+            # 两个都给，比赌一个错一个好。只收同一张表的，
+            # 别顺手把别的表拖进来。
             top_table = self.documents[top_index].column.table_name
-
-            if top_table in (covered_tables or set()):
-                continue
-
-            # 这张表一个字段都没进来，把并列的近邻一并补回：
-            # 分不清"北京"说的是 city 还是 province，两个都给，
-            # 比赌一个错一个好。只收同一张表的，别顺手把别的表拖进来。
             tie_floor = top_score * self.config.dominant_keyword_tie_ratio
 
             for index, score in hits:
@@ -502,7 +550,10 @@ class HybridSchemaRetrievalService:
         """
         dominant_indices = self._find_dominant_keyword_docs(
             keywords=keywords,
-            covered_tables={hit.column.table_name for hit in schema_hits},
+            covered_columns={
+                (hit.column.table_name, hit.column.column_name)
+                for hit in schema_hits
+            },
         )
 
         if not dominant_indices:
