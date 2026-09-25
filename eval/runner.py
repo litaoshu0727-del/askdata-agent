@@ -48,6 +48,26 @@ DATASETS = {
     "chinook": (CHINOOK_CASES, "chinook_db", Path("runtime_data") / "chinook.db"),
 }
 
+# 留出集：由没见过系统失败情况的出题人编写。
+#
+# 主题库调到满分之后就测不出东西了——那些改动是被具体失败题一道道驱动出来的，
+# 题库本身也改过问法。一把满分的秤既测不出下一个改进，也测不出过拟合。
+# 这套题写完先冻结再跑，之后只允许修"可证明没法判分"的题，并且逐条记录。
+#
+# 只兜 ImportError：文件存在但写坏了（语法错误）应该直接炸出来，不能悄悄变成空题库。
+try:
+    from eval.cases_holdout import (  # noqa: E402
+        HOLDOUT_CHINOOK_CASES,
+        HOLDOUT_ECOMMERCE_CASES,
+    )
+except ImportError:
+    HOLDOUT_ECOMMERCE_CASES, HOLDOUT_CHINOOK_CASES = [], []
+
+HOLDOUT_BANKS = {
+    "ecommerce": HOLDOUT_ECOMMERCE_CASES,
+    "chinook": HOLDOUT_CHINOOK_CASES,
+}
+
 # Schema 支撑不了时，CoT 里应该出现的措辞
 MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不支持", "不足")
 
@@ -676,18 +696,32 @@ def report(aggregates: List[CaseAggregate]) -> None:
         bar = "█" * ok + "░" * (count - ok)
         print(f"  {tag:<14}{ok}/{count}  {bar}")
 
-    all_diagnostics: Dict[str, int] = {}
+    # 按题记下来，不只是汇总个数。
+    #
+    # 只有总数的时候，"筛选值守卫触发了 2 次"是一句没法核查的话——
+    # 是救回了该救的题，还是在不该触发的题上误触发了，看不出来。
+    all_diagnostics: Dict[str, Dict[str, int]] = {}
     for item in outcomes:
         for outcome in item.outcomes:
             for code in outcome.diagnostics:
-                all_diagnostics[code] = all_diagnostics.get(code, 0) + 1
+                per_case = all_diagnostics.setdefault(code, {})
+                per_case[item.case.id] = per_case.get(item.case.id, 0) + 1
 
     if all_diagnostics:
         print("\n" + "=" * 92)
         print("降级记录")
         print("=" * 92)
-        for code, count in sorted(all_diagnostics.items(), key=lambda kv: -kv[1]):
-            print(f"  {code:<26}{count} 题次")
+        for code, per_case in sorted(
+            all_diagnostics.items(), key=lambda kv: -sum(kv[1].values())
+        ):
+            ranked = sorted(per_case.items(), key=lambda kv: (-kv[1], kv[0]))
+            where = "、".join(
+                f"{case_id}×{count}" if count > 1 else case_id
+                for case_id, count in ranked[:10]
+            )
+            if len(ranked) > 10:
+                where += f" 等 {len(ranked)} 题"
+            print(f"  {code:<26}{sum(per_case.values())} 题次　{where}")
 
     elapsed_total = sum(o.elapsed for item in outcomes for o in item.outcomes)
     runs_total = sum(item.runs for item in outcomes)
@@ -890,6 +924,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
+        "--bank", default="main", choices=["main", "holdout"],
+        help="题库。main 是调优用的主题库，holdout 是没见过失败情况就写好的留出集",
+    )
+    parser.add_argument(
         "--meta", default="full", choices=["full", "none", "ab"],
         help=(
             "业务元数据档位。full 用手写元数据，none 整份丢掉只留字段名和样例值，"
@@ -905,6 +943,13 @@ def main() -> None:
     logging.getLogger("askdata").disabled = True
 
     case_pool, database_name, default_db = DATASETS[args.dataset]
+
+    if args.bank == "holdout":
+        case_pool = HOLDOUT_BANKS[args.dataset]
+        if not case_pool:
+            print(f"{args.dataset} 没有留出集（eval/cases_holdout.py 不存在或为空）")
+            return
+
     cases: List[EvalCase] = list(case_pool)
     if args.case:
         cases = [item for item in cases if item.id.upper() == args.case.upper()]
@@ -920,7 +965,8 @@ def main() -> None:
     repeat = max(1, args.repeat)
 
     print("=" * 92)
-    print(f"AskData 评测　·　{args.dataset}　·　{len(cases)} 题")
+    bank_label = "　·　留出集" if args.bank == "holdout" else ""
+    print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
     print("=" * 92)
 
     if args.meta == "ab":
