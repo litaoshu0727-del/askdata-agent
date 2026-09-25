@@ -9,6 +9,11 @@ class SqlPromptBuilder:
 
     注意：
     - Prompt 中不放数据库名称，数据库名称只用于后续执行路由。
+    - 第 8、9 条日期规则来自 E44 的实测：apply_time 是带时分秒的 TEXT，
+      模型 5 次里 4 次写 apply_time BETWEEN '2024-05-01' AND '2024-05-10'，
+      字符串比较把 10 号 00:00 之后的记录全部排除，差值从 268979.27 变成
+      241871.02，零告警。当时 SQL 这一步连样例值都看不到，规则要配合
+      局部 Schema 里的样例值一起用。
     """
 
     def build(self, request: SqlGenerationRequest) -> str:
@@ -30,6 +35,10 @@ class SqlPromptBuilder:
 5. SQL需要符合{request.sql_dialect}语法。
 6. 不要输出Markdown代码块，不要输出```sql。
 7. 表名直接写表名，不要加数据库名前缀。写 fact_order，不要写 xxx_db.fact_order。
+8. 时间字段先看样例值。样例值带时分秒（如 2024-05-10 20:25:00）的字段，按日期范围筛选时
+   写成 DATE(字段) BETWEEN '起始日' AND '结束日'，或左闭右开 字段 >= '起始日' AND 字段 < '结束日次日'。
+   不要写 字段 BETWEEN '起始日' AND '结束日'——那是字符串比较，结束日当天 00:00 之后的记录会被全部漏掉。
+9. 日期字面量一律写成 'YYYY-MM-DD'，年份以样例值为准。不要写 '5月21日' 这样的中文日期。
 
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}
@@ -64,6 +73,10 @@ class SqlPromptBuilder:
    请改用Schema里真实存在的字段，不要臆造，也不要沿用原来的写法。
 4. 表名直接写表名，不要加数据库名前缀。
 5. 不要输出Markdown代码块。
+6. 时间字段先看样例值。样例值带时分秒（如 2024-05-10 20:25:00）的字段，按日期范围筛选时
+   写成 DATE(字段) BETWEEN '起始日' AND '结束日'，或左闭右开 字段 >= '起始日' AND 字段 < '结束日次日'。
+   不要写 字段 BETWEEN '起始日' AND '结束日'——那是字符串比较，结束日当天 00:00 之后的记录会被全部漏掉。
+7. 日期字面量一律写成 'YYYY-MM-DD'，年份以样例值为准。不要写 '5月21日' 这样的中文日期。
 
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}

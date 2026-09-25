@@ -26,6 +26,15 @@ class TableColumn:
     column_name: str
     description: str = ""
     data_type: str = ""
+    samples: List[str] = field(default_factory=list)
+    """
+    字段样例值。
+
+    SQL 生成阶段原本看不到样例值——检索阶段抽了，CoT 阶段也看得到，
+    转成局部 Schema 时却只拷了字段名、描述和类型。于是 SQL 模型眼里的
+    fact_refund.apply_time 只是"退款申请时间，TEXT"，分不清里面存的是
+    2024-05-10 还是 2024-05-10 20:25:00，写日期筛选只能靠猜。
+    """
 
 
 @dataclass
@@ -85,9 +94,12 @@ class LocalSchema:
             for column in table.columns:
                 description = column.description or "无描述"
                 data_type = column.data_type or "unknown"
-                lines.append(
-                    f"- {column.column_name}：{description}，{data_type}"
-                )
+                line = f"- {column.column_name}：{description}，{data_type}"
+
+                if column.samples:
+                    line += f"；样例值：{'、'.join(column.samples)}"
+
+                lines.append(line)
 
             lines.append("")
 

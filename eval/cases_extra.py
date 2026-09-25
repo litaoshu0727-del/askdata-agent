@@ -159,7 +159,7 @@ EXTRA_CASES: List[EvalCase] = [
         ),
     ),
     EvalCase(
-        id="E28", query="买家数最多的城市是哪个",
+        id="E28", query="买家数最多的城市是哪个，只返回城市名称",
         reference_sql="""
             SELECT u.city
             FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id
@@ -179,7 +179,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["跨表关联", "金额字段辨析"], note="",
     ),
     EvalCase(
-        id="E30", query="加购次数最多的三个商品叫什么名字",
+        id="E30", query="加购次数最多的三个商品叫什么名字，只返回商品名称",
         reference_sql="""
             SELECT p.product_name FROM fact_user_behavior b
             JOIN dim_product p ON p.product_id = b.product_id
@@ -273,7 +273,7 @@ EXTRA_CASES: List[EvalCase] = [
         ),
     ),
     EvalCase(
-        id="E38", query="单笔实付金额最高的那笔订单是哪个用户下的",
+        id="E38", query="单笔实付金额最高的那笔订单是哪个用户下的，只返回用户名",
         reference_sql="""
             SELECT u.user_name FROM fact_order o
             JOIN dim_user u ON u.user_id = o.user_id
@@ -283,7 +283,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["跨表关联", "排序取TopN"], note="",
     ),
     EvalCase(
-        id="E39", query="平均标价最高的一级类目是哪个",
+        id="E39", query="平均标价最高的一级类目是哪个，只返回类目名称",
         reference_sql="""
             SELECT c1.category_name FROM dim_product p
             JOIN dim_category c2 ON c2.category_id = p.category_id
@@ -321,7 +321,7 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["时间过滤", "分组统计"], note="按天分组",
     ),
     EvalCase(
-        id="E43", query="最近一次下单时间最晚的用户是谁",
+        id="E43", query="最近一次下单时间最晚的用户是谁，只返回用户名",
         reference_sql="""
             SELECT u.user_name FROM dws_user_summary s
             JOIN dim_user u ON u.user_id = s.user_id
@@ -357,7 +357,7 @@ EXTRA_CASES: List[EvalCase] = [
         ),
     ),
     EvalCase(
-        id="E45", query="注册时间最早的用户注册于哪一天",
+        id="E45", query="注册时间最早的用户注册于哪一天，只返回日期",
         reference_sql="SELECT MIN(register_time) AS v FROM dim_user",
         must_hit_columns=["dim_user.register_time"],
         tags=["时间过滤", "同名字段干扰"],

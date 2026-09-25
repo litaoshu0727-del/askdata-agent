@@ -6,6 +6,9 @@ from typing import Dict, Iterable, List, Set
 
 from .objects import CotStep, LocalSchema, TableColumn, TableRelation, TableSchema
 
+SQL_SAMPLE_LIMIT = 3
+"""SQL 生成 Prompt 里每个字段带几个样例值。"""
+
 
 class LocalSchemaStore:
     """
@@ -109,6 +112,12 @@ class LocalSchemaStore:
                         column_name=getattr(col, "column_name", ""),
                         description=getattr(col, "description", ""),
                         data_type=getattr(col, "data_type", ""),
+                        # 三个就够看出格式（带不带时分秒、枚举值长什么样），
+                        # 再多只是往 Prompt 里堆 token。
+                        samples=[
+                            str(value)
+                            for value in (getattr(col, "samples", None) or [])[:SQL_SAMPLE_LIMIT]
+                        ],
                     )
                 )
 
