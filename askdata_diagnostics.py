@@ -85,6 +85,18 @@ class Codes:
     DOMINANT_KEYWORD_RESCUED = "DOMINANT_KEYWORD_RESCUED"
     """字面命中压倒性的字段被精排淘汰，已强制补回。频繁出现说明精排阈值需要调。"""
 
+    FILTER_VALUE_DROPPED = "FILTER_VALUE_DROPPED"
+    """
+    问题里提到了某个枚举取值（「浏览」「已完成」），SQL 里却既没有这个取值、
+    也没碰它所属的字段——筛选条件被整个丢了。已用全量 Schema 带提示重规划。
+
+    专门对付零告警的错答案：检索漏了筛选字段时，CoT 往往不觉得缺什么，
+    不报缺失，全量复核也就不触发，最后安静地交出一个合理的错数字。
+    """
+
+    FILTER_GUARD_DISABLED = "FILTER_GUARD_DISABLED"
+    """筛选值守卫建索引失败，检索漏掉筛选字段时将回到零告警。"""
+
     SQL_DB_PREFIX_STRIPPED = "SQL_DB_PREFIX_STRIPPED"
     """模型给表名加了数据库名前缀，已自动剥除。SQLite 不接受这种限定符。"""
 

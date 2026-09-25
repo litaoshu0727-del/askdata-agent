@@ -23,6 +23,7 @@ from sql_generation import (
 )
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
+from .filter_guard import FilterValueGuard
 from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
@@ -84,6 +85,7 @@ class AskDataText2SQLPipeline:
             self.schema_retrieval_service = self._build_schema_retrieval_service()
             self.cot_planner = self._build_cot_planner()
             self.mcp_router = self._build_mcp_router()
+            self.filter_guard = self._build_filter_guard()
 
         self.setup_diagnostics = list(setup_diagnostics)
 
@@ -139,7 +141,11 @@ class AskDataText2SQLPipeline:
 
         runs = max(1, self.config.self_consistency_runs)
         attempts = [
-            self._plan_and_execute(contextual_query, schema_graph)
+            self._plan_and_execute(
+                contextual_query,
+                schema_graph,
+                guard_query=effective_query,
+            )
             for _ in range(runs)
         ]
 
@@ -156,7 +162,13 @@ class AskDataText2SQLPipeline:
             diagnostics=self.setup_diagnostics + list(diagnostics),
         )
 
-    def _plan_and_execute(self, contextual_query: str, schema_graph):
+    def _plan_and_execute(
+        self,
+        contextual_query: str,
+        schema_graph,
+        guard_query: str = "",
+        guard_retry: bool = False,
+    ):
         """
         跑一次完整的「CoT 规划 → SQL 生成 → 执行」。
 
@@ -290,7 +302,70 @@ class AskDataText2SQLPipeline:
                 )
             )
 
+        # 筛选值守卫：问题提到的枚举取值，SQL 有没有用上。
+        #
+        # 全量复核只在 CoT 自己说"缺失"时触发。但检索漏掉筛选字段时，CoT 往往
+        # 不觉得缺什么——E19 直接去掉了 behavior_type='浏览'，E51 拿
+        # finish_time IS NOT NULL 凑"已完成"，降级记录都是空的。
+        # 这里拿数据库的取值当裁判，不依赖 CoT 自觉。
+        dropped = self._find_dropped_filters(guard_query, step_logs)
+
+        if dropped and not guard_retry:
+            emit(
+                Codes.FILTER_VALUE_DROPPED,
+                "问题提到的取值没有出现在 SQL 里，筛选条件疑似被丢，已用全量 Schema 带提示重规划",
+                取值="、".join(item.render() for item in dropped),
+                问题=guard_query[:60],
+            )
+
+            return self._plan_and_execute(
+                contextual_query + self._dropped_filter_hint(dropped),
+                self._build_full_schema_graph(),
+                guard_query=guard_query,
+                guard_retry=True,
+            )
+
+        if dropped:
+            # 重规划之后还是没用上。不再重试——结果照常交出，但留下记录，
+            # 至少不再是零告警。
+            emit(
+                Codes.FILTER_VALUE_DROPPED,
+                "重规划后问题提到的取值仍未出现在 SQL 里，结果可能缺了筛选条件",
+                取值="、".join(item.render() for item in dropped),
+                问题=guard_query[:60],
+            )
+
         return cot_result, step_logs, schema_graph
+
+    def _find_dropped_filters(self, guard_query: str, step_logs) -> list:
+        """跑通了 SQL 才查；CoT 判缺失、没生成 SQL 的情况不归这里管。"""
+        if self.filter_guard is None or not guard_query or not step_logs:
+            return []
+
+        return self.filter_guard.find_dropped(
+            guard_query,
+            [log.sql for log in step_logs],
+        )
+
+    @staticmethod
+    def _dropped_filter_hint(dropped) -> str:
+        """
+        重规划时附在问题后面的提示。
+
+        措辞刻意不下命令。取值原文出现在问题里，大多数时候就是要按它筛选；
+        但"已支付订单"也可能是在说"付过款的订单"（按支付时间判断），
+        那时硬塞一个 order_status = '已支付' 反而会把对的改成错的。
+        所以只把事实摆出来，让模型自己判断。
+        """
+        facts = "；".join(
+            f"「{item.value}」是 {' / '.join(item.columns)} 的取值"
+            for item in dropped
+        )
+
+        return (
+            "\n\n（校验提示：" + facts + "。上一次生成的 SQL 没有体现这个条件。"
+            "请重新判断问题是否要求按它筛选，需要的话在规划中写明筛选字段和取值。）"
+        )
 
     @staticmethod
     def _result_signature(step_logs) -> str:
@@ -345,6 +420,23 @@ class AskDataText2SQLPipeline:
                 return attempt
 
         return attempts[0]
+
+    def _build_filter_guard(self) -> Optional[FilterValueGuard]:
+        """
+        建筛选值守卫的取值索引。
+
+        扫库失败不该拖垮整条链路——守卫是锦上添花的兜底，没有它链路照样跑，
+        只是回到"检索漏了筛选字段就零告警"的老样子。所以失败时留下记录、返回 None。
+        """
+        try:
+            return FilterValueGuard.from_sqlite(self.db_path)
+        except Exception as exc:
+            emit(
+                Codes.FILTER_GUARD_DISABLED,
+                "筛选值守卫建索引失败，检索漏掉筛选字段时将不会告警",
+                原因=str(exc)[:80],
+            )
+            return None
 
     def _build_schema_retrieval_service(self) -> HybridSchemaRetrievalService:
         """

@@ -114,7 +114,7 @@ CASES: List[EvalCase] = [
     ),
     EvalCase(
         id="E05",
-        query="所有已支付订单的实付金额合计是多少",
+        query="所有付过款的订单（不论后来是否完成或退款），实付金额合计是多少",
         reference_sql="""
             SELECT ROUND(SUM(pay_amount), 2) AS total
             FROM fact_order
@@ -122,7 +122,15 @@ CASES: List[EvalCase] = [
         """,
         must_hit_columns=[["fact_order.pay_amount", "fact_payment.pay_amount"]],
         tags=["金额字段辨析"],
-        note="实付金额是 fact_order.pay_amount，不是 order_amount，也不需要关联 fact_payment",
+        note=(
+            "实付金额是 fact_order.pay_amount，不是 order_amount，也不需要关联 fact_payment。"
+            "\n"
+            "原问法是「所有已支付订单」，和 E51「已完成订单」在同一个题库里被往相反方向解读："
+            "这里按 pay_time IS NOT NULL（付过款就算，9043512.50），E51 按 order_status 取值。"
+            "而「已支付」恰好也是 order_status 的一个取值，字面读法得 1551020.05。"
+            "题库统一约定：问题里出现枚举取值原文，就按那个取值筛选——所以这道题要表达"
+            "「付过款」，就不该用「已支付」这个原文"
+        ),
     ),
     EvalCase(
         id="E06",
