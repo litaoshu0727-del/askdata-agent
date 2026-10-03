@@ -1003,7 +1003,7 @@ def _fact_business_meta() -> dict:
                     "keyword_text": "gmv GMV 成交总额 成交额 销售额 销售总额 营业额 店铺日汇总表 核心指标 日报",
                 },
                 "pay_amount": {
-                    "description": "店铺当日实付金额，只统计已支付订单，口径小于等于 GMV。",
+                    "description": "店铺当日实付金额，只统计已支付订单。",
                     "aliases": ["实付金额", "日实付金额", "支付金额"],
                     "semantic_role": "metric",
                 },
