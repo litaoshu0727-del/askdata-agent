@@ -430,10 +430,11 @@ def _dimension_business_meta() -> dict:
 
     1. aliases 覆盖业务口头表达：用户说"销售额"、"客单价"、"退款多少钱"，
        字段名却叫 gmv、avg_order_amount、refund_amount。
-    2. 把近义字段的差别写进 description：order_amount 和 pay_amount
-       都是"金额"，差在有没有扣优惠、加运费。
-    3. 只给最容易混淆的字段手写 keyword_text / rerank_text，
+    2. 把近义字段的差别写进 description 和 business_usage：order_amount 和
+       pay_amount 都是"金额"，差在有没有扣优惠、加运费。
+    3. 只给最容易混淆的字段手写 keyword_text，
        其余字段由 document_builder 自动生成默认索引文本。
+       精排文本（rerank_text）一条都不手写，原因见 get_ecommerce_business_meta。
     """
     return {
         # ---------------- 维度层 ----------------
@@ -457,7 +458,6 @@ def _dimension_business_meta() -> dict:
                     "semantic_role": "output_dimension",
                     "business_usage": "用户排行、用户明细类查询的展示字段。",
                     "keyword_text": "user_name 用户名 昵称 用户姓名 用户 是谁 哪个用户 哪位用户 用户排行 用户列表",
-                    "rerank_text": "字段：dim_user.user_name。含义：用户昵称。用途：当用户问“是谁/哪个用户/哪位用户”时，应该输出用户昵称而不是 user_id。",
                 },
                 "register_time": {
                     "description": "用户注册日期。注意与订单的下单时间区分，这里描述的是用户何时成为会员。",
@@ -471,7 +471,6 @@ def _dimension_business_meta() -> dict:
                     "semantic_role": "dimension",
                     "business_usage": "按城市维度做地域分析时使用。注意店铺表也有 city 字段，指的是店铺所在地。",
                     "keyword_text": "city 城市 所在城市 用户城市 地域 北京 上海 广州 深圳 杭州 用户表",
-                    "rerank_text": "字段：dim_user.city。含义：用户所在城市。别名：城市、用户城市。用途：按用户地域做分析。区别：dim_shop.city 指的是店铺所在城市，不是用户城市。",
                 },
                 "province": {
                     "description": "用户所在省份。",
@@ -491,7 +490,6 @@ def _dimension_business_meta() -> dict:
                     ),
                     "aliases": ["年龄段", "年龄分组", "年龄区间"],
                     "semantic_role": "dimension",
-                    "rerank_text": "字段：dim_user.age_group。含义：年龄段区间。边界：不是精确年龄，库中没有出生日期，无法回答“具体年龄是多少岁”。",
                 },
                 "member_level": {
                     "description": "会员等级，取值为普通会员、银卡会员、金卡会员、钻石会员。",
@@ -560,7 +558,6 @@ def _dimension_business_meta() -> dict:
                     "semantic_role": "output_dimension",
                     "business_usage": "店铺排行、店铺明细类查询的展示字段。",
                     "keyword_text": "shop_name 店铺名称 店铺名 商家名称 店名 店铺 哪些店铺 哪个店铺 店铺排行 top店铺 店铺列表",
-                    "rerank_text": "字段：dim_shop.shop_name。含义：店铺名称。用途：当用户问“哪些店铺/哪个店铺销售额最高/店铺排行”时，应该输出店铺名称而不是 shop_id，因此需要关联 dim_shop 表取出本字段。",
                 },
                 "shop_type": {
                     "description": "店铺类型，取值为旗舰店、专营店、自营店、个人店。",
@@ -576,7 +573,6 @@ def _dimension_business_meta() -> dict:
                     "description": "店铺所在城市。注意这是店铺的经营地，不是买家所在地。",
                     "aliases": ["店铺城市", "店铺所在城市"],
                     "semantic_role": "dimension",
-                    "rerank_text": "字段：dim_shop.city。含义：店铺所在城市。区别：如果问的是买家/用户在哪个城市，应该用 dim_user.city，不是这个字段。",
                 },
                 "open_time": {
                     "description": "店铺开业日期。",
@@ -623,12 +619,6 @@ def _dimension_business_meta() -> dict:
                         "先用本字段关联 dim_category 得到二级类目，"
                         "再用二级类目的 parent_category_id 关联 dim_category 得到一级类目（类目表自关联）。"
                     ),
-                    "rerank_text": (
-                        "字段：dim_product.category_id。含义：商品所属的二级类目ID，商品不直接挂一级类目。"
-                        "用途：按类目分析商品、销售、行为时的关联键。"
-                        "注意：按一级类目汇总必须经 dim_category.parent_category_id 自关联上卷，"
-                        "直接关联一级类目会得到空结果。"
-                    ),
                 },
                 "shop_id": {
                     "description": "商品所属店铺ID。",
@@ -646,7 +636,6 @@ def _dimension_business_meta() -> dict:
                     "semantic_role": "metric",
                     "business_usage": "用于价格带分析。注意这是单价，不是订单总金额。",
                     "keyword_text": "list_price 标价 商品单价 挂牌价 原价 售价 单价 价格 平均标价 价格带 商品表",
-                    "rerank_text": "字段：dim_product.list_price。含义：商品挂牌单价。区别：这是单个商品的价格，不是订单金额；订单层面的金额要用 fact_order.order_amount 或 pay_amount。",
                 },
                 "cost_price": {
                     "description": "商品成本价。",
@@ -699,7 +688,6 @@ def _fact_business_meta() -> dict:
                     "value_range": ">= 0",
                     "business_usage": "衡量订单规模、计算 GMV 的口径字段。问“下单金额/订单金额/成交额”时用这个。",
                     "keyword_text": "order_amount 订单金额 订单总额 商品总额 订单原价 成交金额 下单金额 GMV 订单表",
-                    "rerank_text": "字段：fact_order.order_amount。含义：订单商品总金额，按标价累加，未扣优惠、未含运费。别名：订单金额、订单总额、商品总额。区别：扣完优惠、加上运费之后用户真正付的钱是 pay_amount；问“实付/实际支付”要用 pay_amount，问“订单金额/成交额”用本字段。",
                 },
                 "discount_amount": {
                     "description": "订单优惠总金额，包含商品折扣和优惠券抵扣。",
@@ -720,7 +708,6 @@ def _fact_business_meta() -> dict:
                     "value_range": ">= 0",
                     "business_usage": "衡量实际收入。问“实付了多少钱/实际支付金额”时用这个字段。",
                     "keyword_text": "pay_amount 实付金额 实际支付金额 应付金额 支付金额 实收金额 订单表 实际收入",
-                    "rerank_text": "字段：fact_order.pay_amount。含义：订单实付金额 = 订单商品总金额 - 优惠金额 + 运费。别名：实付金额、实际支付金额。区别：fact_payment.pay_amount 是支付流水的金额，用于分析支付渠道；如果只是想知道订单实付多少，用本字段即可，不需要关联支付表。",
                 },
                 "order_status": {
                     "description": "订单状态，取值为已完成、已支付、待支付、已取消、已退款。",
@@ -735,7 +722,6 @@ def _fact_business_meta() -> dict:
                     "semantic_role": "filter",
                     "keyword_text": "channel 下单渠道 订单渠道 交易渠道 渠道 APP 小程序 PC官网 直播间 直播 渠道分析",
                     "business_usage": "渠道销售分析。注意与用户表的 register_channel（注册渠道）区分。",
-                    "rerank_text": "字段：fact_order.channel。含义：用户下单时使用的渠道。区别：dim_user.register_channel 是用户注册时的来源渠道，两者含义不同。",
                 },
                 "create_time": {
                     "description": "订单创建时间，即用户下单的时间。",
@@ -743,7 +729,6 @@ def _fact_business_meta() -> dict:
                     "semantic_role": "time",
                     "business_usage": "按日期统计订单量、销售额时的主要时间口径。",
                     "keyword_text": "create_time 下单时间 创建时间 订单时间 交易时间 日期 按天统计",
-                    "rerank_text": "字段：fact_order.create_time。含义：用户下单时间。区别：pay_time 是支付时间，finish_time 是订单完成时间。日常说的“某天的订单/某天的销售额”一般以下单时间为准。",
                 },
                 "pay_time": {
                     "description": "订单支付时间。未支付的订单该字段为空，因此常被用来判断订单是否已支付。",
@@ -760,7 +745,6 @@ def _fact_business_meta() -> dict:
                     ),
                     "aliases": ["完成时间", "收货时间", "订单完成时间", "确认收货时间"],
                     "semantic_role": "time",
-                    "rerank_text": "字段：fact_order.finish_time。含义：买家确认收货时间。边界：库中没有发货时间，无法计算物流时效/配送时长/签收时效；问这类问题应判定为 Schema 缺失。",
                 },
             },
         },
@@ -790,7 +774,6 @@ def _fact_business_meta() -> dict:
                     "semantic_role": "metric",
                     "business_usage": "统计商品或品牌销量时对这个字段求和。",
                     "keyword_text": "quantity 购买数量 数量 件数 销量 销售量 卖了多少件 卖得最好 热销 畅销 订单明细表",
-                    "rerank_text": "字段：fact_order_item.quantity。含义：商品购买件数。别名：销量、销售量。区别：问“销量最高”要对本字段求和（SUM），不是数订单行数（COUNT）——一笔订单可能买了 3 件。",
                 },
                 "item_price": {
                     "description": "下单时该商品的单价。",
@@ -807,7 +790,6 @@ def _fact_business_meta() -> dict:
                     "aliases": ["明细金额", "单品成交金额", "商品成交额"],
                     "semantic_role": "metric",
                     "business_usage": "按商品或类目统计销售额时求和这个字段。",
-                    "rerank_text": "字段：fact_order_item.item_amount。含义：单个商品行的成交金额。区别：fact_order.order_amount 是整笔订单的金额；要按商品/类目/品牌维度拆分销售额时才用本字段。",
                 },
             },
         },
@@ -836,7 +818,6 @@ def _fact_business_meta() -> dict:
                     "description": "本笔支付流水的金额。",
                     "aliases": ["支付流水金额", "付款金额"],
                     "semantic_role": "metric",
-                    "rerank_text": "字段：fact_payment.pay_amount。含义：一笔支付流水的金额。区别：这是支付表里的字段，只有在分析支付渠道、支付方式时才需要；如果只是问订单实付了多少，直接用 fact_order.pay_amount，不用关联支付表。",
                 },
                 "pay_status": {
                     "description": "支付状态。",
@@ -870,7 +851,6 @@ def _fact_business_meta() -> dict:
                     "semantic_role": "metric",
                     "business_usage": "统计退款损失、计算退款率。",
                     "keyword_text": "refund_amount 退款金额 退款额 售后金额 退钱 退款损失 退款表",
-                    "rerank_text": "字段：fact_refund.refund_amount。含义：订单的退款金额，可能全额也可能部分。别名：退款金额、退款额。用途：问“退了多少钱/退款金额是多少”时输出这个字段。",
                 },
                 "refund_reason": {
                     "description": "退款原因，取值为七天无理由、商品质量问题、发错货、物流损坏、拍错了。",
@@ -893,7 +873,6 @@ def _fact_business_meta() -> dict:
                     "description": "退款完成时间，退款中的记录该字段为空。",
                     "aliases": ["退款完成时间", "退款到账时间"],
                     "semantic_role": "time",
-                    "rerank_text": "字段：fact_refund.finish_time。含义：退款完成时间。区别：fact_order.finish_time 是订单确认收货时间，两者完全不同。",
                 },
             },
         },
@@ -961,7 +940,6 @@ def _fact_business_meta() -> dict:
                     "value_range": ">= 0",
                     "business_usage": "识别高价值用户、做用户分层。问“用户一共花了多少钱”时用这个字段。",
                     "keyword_text": "total_pay_amount 累计实付金额 消费总额 累计消费金额 总消费 累计支付金额 高价值用户 用户分层 用户汇总表",
-                    "rerank_text": "字段：dws_user_summary.total_pay_amount。含义：用户历史累计实付金额，即消费总额。别名：消费总额、累计消费金额。区别：fact_order.pay_amount 是单笔订单的实付金额；问“某用户一共消费了多少/累计实付超过多少的用户”要用本字段，不需要自己聚合订单表。",
                 },
                 "avg_order_amount": {
                     "description": "该用户的平均订单金额，也就是通常说的客单价。",
@@ -969,7 +947,6 @@ def _fact_business_meta() -> dict:
                     "semantic_role": "metric",
                     "business_usage": "衡量用户消费能力。“客单价”是业务口头表达，对应的就是这个字段。",
                     "keyword_text": "avg_order_amount 客单价 平均订单金额 笔单价 平均客单价 消费能力 用户汇总表",
-                    "rerank_text": "字段：dws_user_summary.avg_order_amount。含义：用户平均每笔订单的金额，业务上叫客单价。别名：客单价、笔单价。用途：当用户问“客单价是多少”时，直接输出这个字段，不需要自己用总额除以订单数。",
                 },
                 "refund_order_count": {
                     "description": "该用户的退款订单笔数。",
@@ -1024,13 +1001,11 @@ def _fact_business_meta() -> dict:
                     "value_range": ">= 0",
                     "business_usage": "店铺经营的核心指标。问“销售额/成交额/GMV 是多少”时用这个字段。",
                     "keyword_text": "gmv GMV 成交总额 成交额 销售额 销售总额 营业额 店铺日汇总表 核心指标 日报",
-                    "rerank_text": "字段：dws_shop_daily.gmv。含义：店铺当日成交总额，等于当天订单的商品总金额之和。别名：GMV、成交额、销售额、营业额。区别：pay_amount 是当天实际支付到账的金额，会小于 GMV；问“销售额/成交额/GMV”用本字段。",
                 },
                 "pay_amount": {
                     "description": "店铺当日实付金额，只统计已支付订单，口径小于等于 GMV。",
                     "aliases": ["实付金额", "日实付金额", "支付金额"],
                     "semantic_role": "metric",
-                    "rerank_text": "字段：dws_shop_daily.pay_amount。含义：店铺当天已支付订单的实付金额合计。区别：gmv 统计的是所有订单的商品总金额（含未支付），本字段只统计已支付部分。",
                 },
                 "order_count": {
                     "description": "店铺当日订单量。",
@@ -1057,13 +1032,6 @@ def _fact_business_meta() -> dict:
                         "问「某段时间内发生了多少退款」要用 fact_refund.refund_amount，"
                         "按 apply_time（申请时间）或 finish_time（完成时间）筛选。"
                     ),
-                    "rerank_text": (
-                        "字段：dws_shop_daily.refund_amount。含义：按订单下单日期归属的退款金额，"
-                        "是当天下的订单后来产生的退款，不是当天发生的退款。"
-                        "用途：按店铺算累计退款、退款率。"
-                        "区别：按退款发生时间切分（某段时间退了多少钱）要用 fact_refund.refund_amount "
-                        "配合 apply_time 或 finish_time，不能用本字段配 stat_date。"
-                    ),
                 },
                 "conversion_rate": {
                     "description": "店铺当日支付转化率，口径为已支付买家数除以下单买家数，取值为 0 到 1 之间的小数。",
@@ -1087,10 +1055,21 @@ def get_ecommerce_business_meta() -> dict:
 
     1. aliases 覆盖业务口头表达：用户说“销售额”“客单价”“退了多少钱”，
        字段名却叫 gmv、avg_order_amount、refund_amount。
-    2. 把近义字段的差别写进 description 和 rerank_text：
+    2. 把近义字段的差别写进 description 和 business_usage：
        order_amount 和 pay_amount 都是“金额”，差在有没有扣优惠、加运费。
-    3. 只给最容易混淆的字段手写 keyword_text / rerank_text，
+    3. 只给最容易混淆的字段手写 keyword_text，
        其余字段由 document_builder 自动生成默认索引文本。
+
+    **精排文本（rerank_text）一条都不手写**，原因和 Chinook 一样
+    （见 chinook_data.get_chinook_business_meta）：手写的 rerank_text 会
+    **整个替换**默认文本，把表描述、别名、用途和样例值一起丢掉。
+
+    原先的 22 条删掉时，没有像 Chinook 那样把辨析挪进 business_usage。
+    这边每个字段自己的 description / business_usage 已经写清了它是什么，
+    手写文本里多出来的主要是“区别：别的字段是……”。这种话写进本字段，
+    会让本字段在问别的字段的查询里排上去：试过挪进去，「钻石会员一共贡献了
+    多少实付金额」里 fact_payment.pay_amount、order_amount 带上了“实付”，
+    精排从第 13、14 名升到第 4、7 名，把 dim_user.member_level 挤出了名额。
     """
     meta = {}
     meta.update(_dimension_business_meta())
