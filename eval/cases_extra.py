@@ -179,15 +179,19 @@ EXTRA_CASES: List[EvalCase] = [
         tags=["跨表关联", "金额字段辨析"], note="",
     ),
     EvalCase(
-        id="E30", query="加购次数最多的三个商品叫什么名字，只返回商品名称",
+        id="E30", query="加购次数最多的两个商品叫什么名字，只返回商品名称",
         reference_sql="""
             SELECT p.product_name FROM fact_user_behavior b
             JOIN dim_product p ON p.product_id = b.product_id
             WHERE b.behavior_type = '加购'
-            GROUP BY p.product_id, p.product_name ORDER BY COUNT(*) DESC LIMIT 3
+            GROUP BY p.product_id, p.product_name ORDER BY COUNT(*) DESC LIMIT 2
         """,
         must_hit_columns=["fact_user_behavior.behavior_type", "dim_product.product_name"],
-        tags=["跨表关联", "排序取TopN"], note="输出要的是商品名不是 ID",
+        tags=["跨表关联", "排序取TopN"],
+        note=(
+            "输出要的是商品名不是 ID。原先问前三个，可第 3 名有 4 个商品并列 15 次，"
+            "判分只认参考 SQL 取的那一个，改成前两个（17、16 次，没有并列）。"
+        ),
     ),
     EvalCase(
         id="E31", query="用微信支付的订单实付金额合计是多少",
