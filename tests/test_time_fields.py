@@ -60,15 +60,17 @@ INSERT INTO invoice VALUES (3, 5.94, '2025-12-22 00:00:00');
 
 class TimeCoverageLoaderTestCase(unittest.TestCase):
     """
-    回归守卫：时间字段的样例值只取表里前几个不同值。
+    回归守卫：加载器从数据算出时间字段的取值范围和覆盖年份，存进 time_coverage。
 
-    Chinook 开票日期的 5 个样例全是 2021 年 1 月上旬，问"2024年"时，精排看到的
-    时间字段文本里一个 2024 都没有。加载器从数据算出取值范围和覆盖年份，作为 value_range。
+    时间约束保底靠它判断"哪些时间字段的数据覆盖了所提年份"。value_range 不能动——
+    它会进精排文本和提示词，不需要时间的题不该为它付代价。
     """
 
     def load(self, script: str) -> dict:
         _, columns, _ = SQLiteSchemaLoader(db_path=make_db(script), database_name="db").load()
-        return {f"{c.table_name}.{c.column_name}": c.value_range for c in columns}
+        for column in columns:
+            self.assertEqual(column.value_range, "", f"{column.table_name}.{column.column_name}")
+        return {f"{c.table_name}.{c.column_name}": c.time_coverage for c in columns}
 
     def test_date_columns_get_range_and_years(self):
         ranges = self.load(SALES_DB)
@@ -217,6 +219,22 @@ class TimeFieldGuardTestCase(unittest.TestCase):
 
         self.assertEqual(names, ["invoice.total", "invoice.invoice_date"])
         self.assertEqual(rescued, [])
+
+    def test_coverage_stays_out_of_index_texts_and_prompt(self):
+        """
+        覆盖年份只给保底用。它最初写在 value_range 里，第三套盲写题上 30 道 ecommerce 题的
+        提示词全变了，11 道题的上下文被时间字段换掉了别的字段。
+        """
+        for document in self.service.documents:
+            for text in (document.keyword_text, document.vector_text, document.rerank_text):
+                self.assertNotIn("覆盖", text, document.doc_id)
+
+        with silenced():
+            result = self.service.retrieve(query="2024年一共开了多少张发票", keywords=["2024年", "发票"])
+
+        context = result.schema_graph.to_prompt_context()
+        self.assertIn("invoice_date", context)
+        self.assertNotIn("覆盖", context)
 
     def test_guard_can_be_switched_off(self):
         self.service.config.time_field_guard = False

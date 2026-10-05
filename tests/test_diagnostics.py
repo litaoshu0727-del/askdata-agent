@@ -482,6 +482,15 @@ class SchemaIndexRoundTripTestCase(unittest.TestCase):
                         getattr(by_id_ix[doc_id], field_name),
                     )
 
+            # 时间约束保底靠它挑字段，它不进任何文本，丢了也不会让上面的比对报错
+            with self.subTest(字段=doc_id, 属性="time_coverage"):
+                self.assertEqual(doc.column.time_coverage, by_id_ix[doc_id].column.time_coverage)
+
+        self.assertTrue(
+            any(doc.column.time_coverage for doc in from_index.documents),
+            "测试库里有时间字段，往返后却一个 time_coverage 都没有",
+        )
+
         # 向量必须逐元素一致，否则召回排序会悄悄漂移
         emb_db = {d.doc_id: from_db.vector_index.embeddings[i]
                   for i, d in enumerate(from_db.documents)}

@@ -86,8 +86,8 @@ HOLDOUT2_BANKS = {
 
 # 第三套留出集：ecommerce 和 Chinook 都有。
 #
-# 第二套也诊断过了（HB16 的时间字段弱点就是从它上面查出来的）。这一套冻结后先不跑：
-# 等时间字段修完，和删 ecommerce 精排文本之前、之后的版本一起跑，三个版本都没见过这些题。
+# 第二套也诊断过了（HB16 的时间字段弱点就是从它上面查出来的）。这一套在时间字段修完后
+# 第一次运行，删 ecommerce 精排文本之前、之后和时间修复后三个版本一起跑——现在也用过了。
 try:
     from eval.cases_holdout3 import (  # noqa: E402
         HOLDOUT3_CHINOOK_CASES,
@@ -994,8 +994,8 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank in {"holdout", "holdout2"}:
-        # 提醒：这两套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
+    if args.bank in {"holdout", "holdout2", "holdout3"}:
+        # 提醒：这几套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
         print(f"⚠️ {args.bank} 已经用过（见 README）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
 

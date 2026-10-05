@@ -156,7 +156,8 @@ class HybridSchemaRetrievalConfig:
     覆盖规则认的第一名是出生日期。按数据覆盖筛就干净了：BirthDate 覆盖
     1947–1973 年，问 2024 年时根本不在候选里。
 
-    覆盖年份取自 sqlite_loader 从数据算出的 value_range（"2021-01-01 至 2025-12-22，…"）。
+    覆盖年份取自 sqlite_loader 从数据算出的 time_coverage（"2021-01-01 至 2025-12-22，…"），
+    它不进精排文本和提示词，理由见 SQLiteSchemaLoader._get_time_coverage。
     问题里没提年份，或没有字段覆盖所提年份时，所有时间字段都参与挑选。
     """
 
@@ -644,7 +645,7 @@ class HybridSchemaRetrievalService:
             index
             for index, doc in enumerate(self.documents)
             if getattr(doc.column, "semantic_role", "") == "time"
-            or self._COVERED_YEARS.match(getattr(doc.column, "value_range", "") or "")
+            or self._COVERED_YEARS.match(getattr(doc.column, "time_coverage", "") or "")
         ]
 
         if not time_docs:
@@ -654,7 +655,7 @@ class HybridSchemaRetrievalService:
 
         def covers(index: int) -> bool:
             span = self._COVERED_YEARS.match(
-                getattr(self.documents[index].column, "value_range", "") or ""
+                getattr(self.documents[index].column, "time_coverage", "") or ""
             )
             return span is not None and any(
                 int(span.group(1)) <= year <= int(span.group(2)) for year in years

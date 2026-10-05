@@ -42,6 +42,7 @@ class ColumnSchema:
 
     samples: List[str] = field(default_factory=list)  # 字段样例值
     value_range: str = ""  # 字段取值范围
+    time_coverage: str = ""  # 时间字段从数据算出的范围和覆盖年份，只给时间约束保底用，不进索引文本和提示词
     data_distribution: str = ""  # 字段数据分布
 
     business_usage: str = ""  # 字段业务用途

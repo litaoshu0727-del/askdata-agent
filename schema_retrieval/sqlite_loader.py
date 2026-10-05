@@ -98,7 +98,7 @@ class SQLiteSchemaLoader:
                             table_description=table_meta.get("description", ""),
                             table_aliases=table_meta.get("aliases", []),
                             samples=samples,
-                            value_range=self._get_time_coverage(
+                            time_coverage=self._get_time_coverage(
                                 conn, table_name, col_name, row["type"] or "", samples
                             ),
                             is_primary_key=col_name in primary_keys,
@@ -137,20 +137,19 @@ class SQLiteSchemaLoader:
         samples: List[str],
     ) -> str:
         """
-        时间字段的取值范围和覆盖年份，从数据里算，作为 value_range。
+        时间字段的取值范围和覆盖年份，从数据里算，存进 time_coverage，只给时间约束保底用。
 
-        样例值只取表里前几个不同值：Chinook 开票日期的 5 个样例全是 2021 年 1 月上旬。
-        问"2024年"时，精排看到的时间字段文本里一个 2024 都没有，
-        「2023年12月一共卖出了多少首曲目」把 InvoiceDate 排到 19/20，
-        「2024年注册的用户一共下了多少笔订单」把 register_time 排到 20/20——
-        两路召回都把它排在前几名，偏偏精排不认。
+        形如"2021-01-01 至 2025-12-22，覆盖 2021年、…、2025年"。保底靠它判断
+        "问 2024 年时，哪些时间字段的数据覆盖了 2024 年"——Employee.BirthDate
+        覆盖 1947–1973 年，问 2024 年时根本不该是候选。
 
-        补上"2021-01-01 至 2025-12-22，覆盖 2021年、…、2025年"后，20 道诊断题
-        × 3 组关键词里，精排名额内从 50 次升到 53 次，没有一题变差。只进精排文本和
-        提示词，不进 BM25 和向量文本：加进召回文本没有多出好处。
+        **不进精排文本和提示词。**最初它写在 value_range 里：诊断题上精排名额内
+        从 50 次升到 53 次，可第三套盲写题上，30 道 ecommerce 题的提示词全变了，
+        11 道题的上下文被时间字段换掉了别的字段（新题大多提到"2024 年 5 月"，
+        ecommerce 的时间字段又全覆盖 2024 年 5 月）；而 50 道新题里没有一道漏过
+        时间字段，它没有可帮的地方。不需要时间的题，不该为它付代价。
 
         判定只看数据，不看元数据：声明类型带 DATE/TIME，或样例值都形如日期。
-        元数据里写了 value_range 的，由业务元数据覆盖这里的结果。
         """
         looks_like_time = any(word in data_type.upper() for word in ("DATE", "TIME")) or (
             bool(samples) and all(self._DATE_VALUE.match(value) for value in samples)
