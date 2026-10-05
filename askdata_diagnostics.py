@@ -85,6 +85,13 @@ class Codes:
     DOMINANT_KEYWORD_RESCUED = "DOMINANT_KEYWORD_RESCUED"
     """字面命中压倒性的字段被精排淘汰，已强制补回。频繁出现说明精排阈值需要调。"""
 
+    TIME_FIELD_RESCUED = "TIME_FIELD_RESCUED"
+    """
+    问题里有时间约束（某年、某月、某日、季度……），检索结果里却没有最贴题的、
+    数据覆盖该时段的时间字段，已补回。精排按"和整个问题有多相关"打分，
+    时间是约束不是主题，长问题里时间字段常被排到垫底。
+    """
+
     FILTER_VALUE_DROPPED = "FILTER_VALUE_DROPPED"
     """
     问题里提到了某个枚举取值（「浏览」「已完成」），SQL 里却既没有这个取值、

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set
 
@@ -139,6 +140,25 @@ class HybridSchemaRetrievalConfig:
 
     max_dominant_per_query: int = 4
     """单次查询最多保送几个字段，防止保送集喧宾夺主。"""
+
+    time_field_guard: bool = True
+    """
+    时间约束保底：问题里有明确的时间约束（某年、某月、某日、季度、上下旬……）时，
+    从数据覆盖了所提年份的时间字段里，用精排挑最贴题的一个，不在结果里就补回。
+
+    精排按"这个字段和整个问题有多相关"打分，而时间是约束不是主题。
+    HB16（按流派比较 2023、2024 两年的销售额）里，Track.Bytes 打 0.65，
+    InvoiceDate 只有 0.019，排在 60 个候选的第 41——给时间字段的精排文本
+    补多少内容都救不回来。
+
+    靠"关键词覆盖"也兜不住：BM25 把「2024年」切成「2024」和「年」，
+    Employee.BirthDate 凭"年龄"里的「年」字和 InvoiceDate 打成平手（10.23 比 10.12），
+    覆盖规则认的第一名是出生日期。按数据覆盖筛就干净了：BirthDate 覆盖
+    1947–1973 年，问 2024 年时根本不在候选里。
+
+    覆盖年份取自 sqlite_loader 从数据算出的 value_range（"2021-01-01 至 2025-12-22，…"）。
+    问题里没提年份，或没有字段覆盖所提年份时，所有时间字段都参与挑选。
+    """
 
     include_label_columns: bool = True
     """
@@ -403,6 +423,11 @@ class HybridSchemaRetrievalService:
             schema_hits=schema_hits,
         )
 
+        schema_hits = self._add_time_field_hits(
+            query=query,
+            schema_hits=schema_hits,
+        )
+
         schema_graph = build_schema_graph(
             hits=schema_hits,
             tables=self.tables,
@@ -590,6 +615,87 @@ class HybridSchemaRetrievalService:
                 "字面命中压倒性的字段被精排淘汰，已强制补回",
                 字段="、".join(added),
             )
+
+        return schema_hits
+
+    # 明确的时间约束：某年、某月、某日、季度、上下半年、上中下旬、第几周、具体日期。
+    # 不收"最近""本月"这类相对说法——"最近一次下单"不是时间筛选。
+    _TIME_CONSTRAINT = re.compile(
+        r"\d{4}\s*年|\d{1,2}\s*月|\d{1,2}\s*[日号]|季度|[上下]半年|[上中下]旬"
+        r"|第[一二三四五1-5]周|\d{4}[-/]\d{1,2}[-/]\d{1,2}"
+    )
+    _QUERY_YEAR = re.compile(r"(\d{4})\s*年|(\d{4})[-/]\d{1,2}[-/]\d{1,2}")
+    _COVERED_YEARS = re.compile(r"^(\d{4})-\d{2}-\d{2} 至 (\d{4})-\d{2}-\d{2}")
+
+    def _add_time_field_hits(
+        self,
+        query: str,
+        schema_hits: List[SchemaHit],
+    ) -> List[SchemaHit]:
+        """
+        问题里有时间约束时，把最贴题的、数据覆盖该时段的时间字段补进结果。
+
+        为什么需要它，见 HybridSchemaRetrievalConfig.time_field_guard。
+        """
+        if not self.config.time_field_guard or not self._TIME_CONSTRAINT.search(query):
+            return schema_hits
+
+        time_docs = [
+            index
+            for index, doc in enumerate(self.documents)
+            if getattr(doc.column, "semantic_role", "") == "time"
+            or self._COVERED_YEARS.match(getattr(doc.column, "value_range", "") or "")
+        ]
+
+        if not time_docs:
+            return schema_hits
+
+        years = {int(a or b) for a, b in self._QUERY_YEAR.findall(query)}
+
+        def covers(index: int) -> bool:
+            span = self._COVERED_YEARS.match(
+                getattr(self.documents[index].column, "value_range", "") or ""
+            )
+            return span is not None and any(
+                int(span.group(1)) <= year <= int(span.group(2)) for year in years
+            )
+
+        # 问 2024 年，就只在数据覆盖 2024 年的时间字段里挑；一个都不覆盖时（问的年份没有数据），
+        # 照样补一个时间字段，让模型写得出筛选、查出"没有数据"，而不是丢掉条件。
+        eligible = [index for index in time_docs if covers(index)] or time_docs
+
+        best = self.rerank_client.rerank(
+            query=query,
+            documents=[
+                RerankDocument(doc_index=index, text=self.documents[index].rerank_text)
+                for index in eligible
+            ],
+            top_n=1,
+        )
+
+        if not best:
+            return schema_hits
+
+        document = self.documents[best[0].doc_index]
+        key = (document.column.table_name, document.column.column_name)
+
+        if any((hit.column.table_name, hit.column.column_name) == key for hit in schema_hits):
+            return schema_hits
+
+        schema_hits.append(
+            SchemaHit(
+                doc_id=document.doc_id,
+                score=0.0,
+                column=document.column,
+            )
+        )
+
+        emit(
+            Codes.TIME_FIELD_RESCUED,
+            "问题里有时间约束，检索结果里却没有最贴题的时间字段，已补回",
+            字段=f"{key[0]}.{key[1]}",
+            候选数=len(eligible),
+        )
 
         return schema_hits
 
