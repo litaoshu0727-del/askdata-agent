@@ -1,0 +1,39 @@
+{
+  "H3E04": [
+    "SELECT COUNT(*) AS order_cnt, ROUND(SUM(o.pay_amount), 2) AS pay_amt FROM fact_order o JOIN fact_payment p ON p.order_id = o.order_id WHERE o.channel = '直播间' AND p.pay_channel = '花呗分期'"
+  ],
+  "H3E05": [
+    "SELECT s.shop_type, ROUND(SUM(o.order_amount), 2) AS gmv FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id WHERE date(o.create_time) BETWEEN '2024-05-01' AND '2024-05-31' GROUP BY s.shop_type"
+  ],
+  "H3E06": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay_amount FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id WHERE o.pay_time IS NOT NULL GROUP BY o.user_id, u.user_name ORDER BY SUM(o.pay_amount) DESC LIMIT 5"
+  ],
+  "H3E13": [
+    "SELECT o.channel, ROUND(AVG((strftime('%s', p.pay_time) - strftime('%s', o.create_time)) / 60.0), 1) AS avg_minutes FROM fact_order o JOIN fact_payment p ON p.order_id = o.order_id GROUP BY o.channel",
+    "SELECT channel, ROUND(AVG((julianday(pay_time) - julianday(create_time)) * 1440), 1) AS avg_minutes FROM fact_order WHERE pay_time IS NOT NULL GROUP BY channel"
+  ],
+  "H3E14": [
+    "SELECT u.member_level, ROUND(COUNT(o.order_id) * 1.0 / COUNT(DISTINCT u.user_id), 3) AS avg_order_cnt FROM dim_user u LEFT JOIN fact_order o ON o.user_id = u.user_id GROUP BY u.member_level"
+  ],
+  "H3E16": [
+    "SELECT u.user_name, MAX(o.create_time) AS last_order_time FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id GROUP BY o.user_id, u.user_name HAVING MAX(o.create_time) < '2024-05-10'"
+  ],
+  "H3E18": [
+    "WITH daily AS (SELECT shop_id, date(create_time) AS dt, COUNT(DISTINCT CASE WHEN pay_time IS NOT NULL THEN user_id END) * 1.0 / COUNT(DISTINCT user_id) AS cr FROM fact_order WHERE date(create_time) BETWEEN '2024-05-01' AND '2024-05-31' GROUP BY shop_id, date(create_time)) SELECT s.shop_name, ROUND(AVG(d.cr), 4) AS avg_conversion_rate FROM daily d JOIN dim_shop s ON s.shop_id = d.shop_id GROUP BY s.shop_id, s.shop_name ORDER BY avg_conversion_rate ASC LIMIT 3"
+  ],
+  "H3E20": [
+    "SELECT u.user_name, COUNT(DISTINCT date(o.create_time)) AS active_days FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id GROUP BY o.user_id, u.user_name HAVING COUNT(DISTINCT date(o.create_time)) >= 8"
+  ],
+  "H3E21": [
+    "SELECT s.city, ROUND(SUM(o.pay_amount), 2) AS pay_amt FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id WHERE o.pay_time IS NOT NULL AND date(o.create_time) BETWEEN '2024-05-01' AND '2024-05-31' GROUP BY s.city"
+  ],
+  "H3E23": [
+    "SELECT u.user_name, u.register_time FROM dim_user u JOIN dws_user_summary s ON s.user_id = u.user_id WHERE s.total_order_count = 0"
+  ],
+  "H3E29": [
+    "SELECT stat_date AS order_date, SUM(order_count) AS order_cnt FROM dws_shop_daily WHERE stat_date BETWEEN '2024-05-01' AND '2024-05-07' GROUP BY stat_date ORDER BY stat_date"
+  ],
+  "H3E30": [
+    "WITH daily AS (SELECT date(create_time) AS stat_date, SUM(order_amount) AS day_gmv FROM fact_order WHERE date(create_time) >= '2024-05-01' GROUP BY date(create_time)), cum AS (SELECT stat_date, SUM(day_gmv) OVER (ORDER BY stat_date) AS cum_gmv FROM daily) SELECT stat_date, ROUND(cum_gmv, 2) AS cum_gmv FROM cum WHERE stat_date = (SELECT MIN(stat_date) FROM cum WHERE cum_gmv >= 5000000)"
+  ]
+}

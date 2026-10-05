@@ -84,9 +84,27 @@ HOLDOUT2_BANKS = {
     "chinook": HOLDOUT2_CHINOOK_CASES,
 }
 
+# 第三套留出集：ecommerce 和 Chinook 都有。
+#
+# 第二套也诊断过了（HB16 的时间字段弱点就是从它上面查出来的）。这一套冻结后先不跑：
+# 等时间字段修完，和删 ecommerce 精排文本之前、之后的版本一起跑，三个版本都没见过这些题。
+try:
+    from eval.cases_holdout3 import (  # noqa: E402
+        HOLDOUT3_CHINOOK_CASES,
+        HOLDOUT3_ECOMMERCE_CASES,
+    )
+except ImportError:
+    HOLDOUT3_ECOMMERCE_CASES, HOLDOUT3_CHINOOK_CASES = [], []
+
+HOLDOUT3_BANKS = {
+    "ecommerce": HOLDOUT3_ECOMMERCE_CASES,
+    "chinook": HOLDOUT3_CHINOOK_CASES,
+}
+
 BANKS = {
     "holdout": HOLDOUT_BANKS,
     "holdout2": HOLDOUT2_BANKS,
+    "holdout3": HOLDOUT3_BANKS,
 }
 
 # Schema 支撑不了时，CoT 里应该出现的措辞
@@ -947,10 +965,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
-            "holdout2 是第二套 Chinook 盲写留出集"
+            "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）"
         ),
     )
     parser.add_argument(
@@ -996,7 +1014,9 @@ def main() -> None:
     repeat = max(1, args.repeat)
 
     print("=" * 92)
-    bank_label = {"holdout": "　·　留出集", "holdout2": "　·　留出集二"}.get(args.bank, "")
+    bank_label = {
+        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三",
+    }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
     print("=" * 92)
 
