@@ -96,6 +96,42 @@ class FilterValueGuardTest(unittest.TestCase):
         )
         self.assertEqual(dropped, [])
 
+    def test_value_with_own_definition_is_not_checked(self):
+        """
+        H3E13：题目给了口径（支付时间不为空），SQL 按口径写就是对的。
+        守卫原先要它补 order_status = '已支付'，9 次全错。
+        """
+        dropped = self.guard.find_dropped(
+            "已支付过的订单（支付时间不为空）一共多少钱",
+            ["SELECT SUM(pay_amount) FROM fact_order WHERE pay_time IS NOT NULL"],
+        )
+        self.assertEqual(dropped, [])
+
+    def test_definition_anywhere_covers_whole_query(self):
+        """H3E18：先说「已支付买家数」，隔一句才用「已支付买家指……」下定义。"""
+        query = "当天已支付买家数 ÷ 当天下单买家数；已支付买家指至少有一笔支付时间不为空的买家"
+        self.assertEqual(self.guard.mentioned_values(query), ["已支付"])
+        self.assertEqual(self.guard.checked_values(query), [])
+
+    def test_definition_does_not_cross_punctuation(self):
+        """E55：「上海店铺的销售额，减去上旬（1日到10日）」，括号说的是上旬，上海照样要查。"""
+        dropped = self.guard.find_dropped(
+            "上海店铺的销售额，减去上旬（1日到10日）的差值是多少",
+            ["SELECT SUM(pay_amount) FROM fact_order"],
+        )
+        self.assertEqual([item.value for item in dropped], ["上海"])
+
+    def test_value_without_definition_is_still_checked(self):
+        """
+        E51 那条错 SQL 和 H3E13 的对 SQL 结构一模一样，分开它们的只有题目给没给口径。
+        题面换成不带口径的，照样要抓。
+        """
+        dropped = self.guard.find_dropped(
+            "已支付过的订单一共多少钱",
+            ["SELECT SUM(pay_amount) FROM fact_order WHERE pay_time IS NOT NULL"],
+        )
+        self.assertEqual([item.value for item in dropped], ["已支付"])
+
     def test_value_shared_by_two_columns_lists_both(self):
         dropped = self.guard.find_dropped(
             "上海一共有多少订单",

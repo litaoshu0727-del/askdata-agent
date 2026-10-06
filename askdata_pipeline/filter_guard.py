@@ -18,6 +18,17 @@
 裁判用的是数据库本身。「浏览」「已完成」「北京」恰好是某些字段的枚举取值，
 库里查得到。问题提到了某个取值，而 SQL 里既没有这个取值、也没碰它所属的字段，
 那这个筛选条件就是被丢了。整个检查是确定性的，不调 LLM。
+
+例外：问题自己给了口径的取值不查。
+
+    H3E13「已支付过的订单（支付时间不为空）从下单到支付平均用了多少分钟」
+        首轮 SQL 按 pay_time IS NOT NULL 筛，守卫看到「已支付」没出现在 SQL 里，
+        带提示重规划 → 模型改成 order_status = '已支付'，漏掉已完成、已退款的订单
+        → 三个版本 9 次全错，9 次守卫全部触发
+
+题目已经说了「已支付」按什么判断，再拿枚举取值去纠正，就是把对的改成错的。
+和 E51 的错 SQL（finish_time IS NOT NULL 凑"已完成"）结构上一模一样，SQL 这一侧
+分不开，能分开它们的只有问题本身：E51 没给口径，H3E13 给了。
 """
 
 from __future__ import annotations
@@ -29,6 +40,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Set
 
 TEXT_TYPE_MARKERS = ("CHAR", "TEXT", "CLOB")
+
+# 取值后面紧跟着口径说明：中间最多隔 4 个字、不跨标点，然后是括号或「指 / 即 / 定义为」。
+#   已支付过的订单（支付时间不为空）    已支付买家指……支付时间不为空的买家
+# 不跨标点是为了不误伤 E55「上海店铺的销售额，减去上旬（1日到10日）」这种括号说的是别的事。
+_OWN_DEFINITION = re.compile(r"[^，。；、,;:：！？!?\s]{0,4}?(?:[（(]|是指|指|即|定义为)")
 
 
 @dataclass
@@ -121,8 +137,12 @@ class FilterValueGuard:
 
         不重叠、长的优先。英文取值要求词边界，免得 "Pop" 撞上 "Population"。
         """
+        return list(self._mentions(query))
+
+    def _mentions(self, query: str) -> Dict[str, List[tuple]]:
+        """取值 → 它在问题里的每一处位置 (start, end)，按首次匹配的顺序。"""
         taken = [False] * len(query)
-        found: List[str] = []
+        found: Dict[str, List[tuple]] = {}
 
         for value in self._ordered_values:
             for match in self._iter_matches(query, value):
@@ -134,10 +154,28 @@ class FilterValueGuard:
                 for index in range(start, end):
                     taken[index] = True
 
-                if value not in found:
-                    found.append(value)
+                found.setdefault(value, []).append((start, end))
 
         return found
+
+    def checked_values(self, query: str) -> List[str]:
+        """
+        要检查的取值：问题提到了，而且问题没给它另下口径。
+
+        口径在任何一处下了，就对整道题有效。H3E18 先说「当天已支付买家数 ÷ 当天下单
+        买家数」，隔一句才说「已支付买家指……支付时间不为空的买家」。
+        代价：「北京（买家所在地）的订单」这种括号只是在指明字段、仍要按取值筛选的，
+        也会跳过检查。守卫是兜底，跳过只是少一层保护，不会把答案改错。
+        """
+        checked: List[str] = []
+
+        for value, spans in self._mentions(query).items():
+            if any(_OWN_DEFINITION.match(query, end) for _, end in spans):
+                continue
+
+            checked.append(value)
+
+        return checked
 
     def find_dropped(self, query: str, sqls: Iterable[str]) -> List[DroppedFilter]:
         """
@@ -150,7 +188,7 @@ class FilterValueGuard:
         sql_text = "\n".join(sqls)
         dropped: List[DroppedFilter] = []
 
-        for value in self.mentioned_values(query):
+        for value in self.checked_values(query):
             if value in sql_text:
                 continue
 
