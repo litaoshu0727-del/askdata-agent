@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 from .coder_client import CoderModelClient, CoderModelConfig
 from .cot_parser import CotStepParser
@@ -28,13 +27,12 @@ def main() -> None:
     """
     运行 Demo。
 
-    不配置 DASHSCOPE_API_KEY 时走 Mock。
-    配置后调用真实 Coder 模型。
+    供应商、Key 和模型名由 llm_config 统一解析（DeepSeek 优先，其次阿里云百炼），
+    和主链路一致；都没配置时走 Mock。
 
-    示例：
-        export DASHSCOPE_API_KEY="你的APIKey"
-        export DASHSCOPE_CODER_MODEL="qwen-plus"
-        python -m sql_generation.sql_generation_demo
+    原先这里写死了 DASHSCOPE_API_KEY 和 DASHSCOPE_CODER_MODEL（默认 qwen-plus）。只配
+    DeepSeek 时，客户端从 llm_config 拿到了 DeepSeek 的 Key，模型名却还是
+    qwen-plus，请求直接 HTTP 400。
     """
     cot_text = build_demo_cot_text()
 
@@ -47,8 +45,6 @@ def main() -> None:
         schema_store=schema_store,
         coder_client=CoderModelClient(
             CoderModelConfig(
-                api_key=os.getenv("DASHSCOPE_API_KEY", ""),
-                model=os.getenv("DASHSCOPE_CODER_MODEL", "qwen-plus"),
                 temperature=0.0,
                 use_mock_when_no_api_key=True,
             )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 
 from .cot_planner import CotPlanner
@@ -47,19 +46,16 @@ def main() -> None:
     """
     运行流式 Demo。
 
-    不配置 DASHSCOPE_API_KEY 时走 Mock 流式输出。
-    配置后调用真实思考模型流式输出。
+    供应商、Key 和模型名由 llm_config 统一解析（DeepSeek 优先，其次阿里云百炼），
+    和主链路一致；都没配置时走 Mock。
 
-    示例：
-        export DASHSCOPE_API_KEY="你的APIKey"
-        export DASHSCOPE_COT_MODEL="qwen-plus"
-        python -m cot_planning.cot_planning_demo
+    原先这里写死了 DASHSCOPE_API_KEY 和 DASHSCOPE_COT_MODEL（默认 qwen-plus）。只配
+    DeepSeek 时，客户端从 llm_config 拿到了 DeepSeek 的 Key，模型名却还是
+    qwen-plus，请求直接 HTTP 400。
     """
     planner = CotPlanner(
         thinking_client=ThinkingModelClient(
             ThinkingModelConfig(
-                api_key=os.getenv("DASHSCOPE_API_KEY", ""),
-                model=os.getenv("DASHSCOPE_COT_MODEL", "qwen-plus"),
                 temperature=0.0,
                 use_mock_when_no_api_key=True,
                 mock_stream_delay=0.01,
