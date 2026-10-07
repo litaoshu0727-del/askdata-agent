@@ -75,7 +75,7 @@ Web 界面、评测器与三套留出集。
 
 ```bash
 conda create -n askdata python=3.12 && conda activate askdata
-pip install -r requirements-mac.txt
+pip install -r requirements.txt
 cp .env.example .env        # 填上 DEEPSEEK_API_KEY；本地向量与精排默认已开启
 ```
 
