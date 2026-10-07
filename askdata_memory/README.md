@@ -1,30 +1,37 @@
-# AskData 长短期记忆
+# askdata_memory
 
-该模块不依赖 Web 框架，可由后续 API、动态路由器或当前 Text2SQL Pipeline 直接调用。
+长短期记忆。不依赖 Web 框架，由 `DynamicAskDataService` 调用，也可以单独用。
+
+| 文件 | 内容 |
+|---|---|
+| `conversation.py` | `ConversationMemoryService`：统一入口 |
+| `short_term.py` | 短期记忆：滑动窗口 + 异步增量摘要 |
+| `long_term.py` | 长期记忆：个人知识库的保存与召回 |
+| `summarizer.py` | 模型摘要与离线抽取式摘要 |
+| `storage.py` | SQLite 持久化 |
+| `vector_store.py` | Milvus 向量索引（可选） |
+| `reranker.py` | 长期记忆召回的精排（可选） |
+| `objects.py` | 数据结构与配置 |
 
 ## 短期记忆
 
-- SQLite 持久化完整原始消息；
-- 同时按最近消息数和估算 Token 数维护滑动窗口；
-- 窗口外消息由后台线程增量压缩；
-- 摘要带版本与 `through_message_id` 游标，避免重复或遗漏；
-- 摘要运行时读取上一已完成版本，不阻塞当前请求；
-- 摘要保留用户目标、业务口径、筛选条件、SQL 结果、分析结论和任务状态。
-
-配置 `DASHSCOPE_API_KEY` 后，统一服务默认使用项目已有的模型 Client 生成摘要；没有 Key 时使用离线抽取式摘要，便于本地运行。也可以向 `ConversationMemoryService` 注入其他 `MemorySummarizer`。
+- 完整原始消息存 SQLite；按最近消息数和估算 Token 数维护滑动窗口
+- 窗口外的消息由后台线程增量压缩成摘要，不阻塞当前请求；摘要带版本和游标，不重复、不遗漏
+- 摘要保留用户目标、业务口径、筛选条件、SQL 结果、分析结论和任务状态
+- 配了大模型（DeepSeek 或阿里云百炼）就用模型写摘要，没配就用离线抽取式摘要
 
 ## 长期记忆
 
-- 只有显式调用保存方法时才会写入；
-- 结构化与非结构化内容统一保存“检索摘要 + 原始内容 + 元信息 + 向量”；
-- 结构化元信息支持数据库、表、字段、筛选条件、CoT 和 SQL；
-- 召回严格按 `user_id` 隔离，并支持类型与元信息过滤；
-- Rerank 为可选注入能力；未配置时按向量相似度排序；
-- 只有 `enable_long_term=True` 时才会检索个人知识库。
+- **只有显式调用保存方法才写入**，对应用户的"保存到个人知识库"动作
+- 存"检索摘要 + 原始内容 + 元信息 + 向量"；结构化结果的元信息包括库、表、字段、筛选条件、
+  CoT 和 SQL
+- 召回严格按 `user_id` 隔离，只有 `enable_long_term=True` 时才检索
+- 默认用 SQLite 存向量；设置 `MemoryServiceConfig(milvus_uri=...)` 后改用 Milvus Lite 或
+  Milvus 服务
+- 精排可选：配了阿里云百炼 Rerank 就用它，否则在 `ASKDATA_LOCAL_MODELS=1` 时用本地
+  bge-reranker，都没有就按向量相似度排序
 
-默认使用 SQLite 保存原文、元信息与本地向量，适合 Demo。设置 `MemoryServiceConfig(milvus_uri="runtime_data/long_term_memory_vectors.db")` 后会启用项目已依赖的 Milvus Lite 向量索引；也可填写 Milvus 服务 URI。检索先在 Milvus 中按 `user_id` 和记忆类型过滤召回，再读取 SQLite 原文并做元信息过滤与可选 Rerank。
-
-## 基本用法
+## 用法
 
 ```python
 from askdata_memory import ConversationMemoryService
@@ -32,73 +39,34 @@ from askdata_memory import ConversationMemoryService
 memory = ConversationMemoryService()
 
 context = memory.begin_user_turn(
-    user_id="user-1",
-    session_id="session-1",
-    query="上次的交易利率是多少？",
-    enable_long_term=True,
+    user_id="user-1", session_id="session-1",
+    query="上次的交易利率是多少？", enable_long_term=True,
 )
+# context.to_prompt_context() 交给对话模型或查询链路
 
-# 把 context.to_prompt_context() 交给对话模型或查询链路。
 memory.record_assistant_message(
-    user_id="user-1",
-    session_id="session-1",
-    content="查询结果为 3.5%",
-    message_type="sql_result",
+    user_id="user-1", session_id="session-1",
+    content="查询结果为 3.5%", message_type="sql_result",
     payload={"interest_rate": 0.035},
 )
 
-# 仅响应用户的“保存到个人知识库”动作。
+# 用户点了"保存"才调用
 memory.save_structured_result(
-    user_id="user-1",
-    query="查询交易利率",
+    user_id="user-1", query="查询交易利率",
     result={"interest_rate": 0.035},
-    database="trade_db",
-    tables=["interest_info"],
-    columns=["interest_rate"],
+    database="trade_db", tables=["interest_info"], columns=["interest_rate"],
     sql="SELECT interest_rate FROM interest_info ...",
 )
 ```
 
-接入现有 Text2SQL：
+接进 Text2SQL 链路的写法见 [askdata_pipeline](../askdata_pipeline/README.md)。
 
-```python
-from askdata_pipeline import AskDataText2SQLPipeline, DynamicAskDataService
-
-service = DynamicAskDataService(AskDataText2SQLPipeline(), memory)
-response = service.run(
-    user_id="user-1",
-    session_id="session-1",
-    query="那这些用户的利率呢？",
-    enable_long_term=True,
-)
-
-# 用户确认保存后再调用：
-service.save_result_to_personal_knowledge_base(
-    user_id="user-1",
-    result=response.pipeline_result,
-)
-```
-
-## 端到端 Demo
-
-直接运行普通 Python 文件：
-
-```bash
-python askdata_pipeline/memory_end_to_end_demo.py
-```
-
-或按模块运行：
+## Demo 与测试
 
 ```bash
 python -m askdata_pipeline.memory_end_to_end_demo
+python -m unittest tests.test_memory tests.test_routing
 ```
 
-Demo 会依次展示第一轮 Text2SQL、短期窗口、用户主动保存长期记忆、第二轮长期召回、异步摘要完成后的最终上下文。默认记忆文件为 `runtime_data/memory_demo.db`。
-
-Demo 同时启用了动态路由：第一轮获取新数据会进入 `database_query`；第二轮追问历史结果会进入 `data_qa`，不会重复访问数据库。
-
-## 验证
-
-```bash
-python -m unittest discover -s tests -v
-```
+Demo 依次展示：第一轮查库、短期窗口、主动保存长期记忆、第二轮长期召回（路由到 `data_qa`，
+不重复查库）、异步摘要完成后的上下文。记忆默认存在 `runtime_data/memory_demo.db`。
