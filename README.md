@@ -118,7 +118,9 @@ python -m eval.runner --bank holdout3 --repeat 3                # 留出集（�
 python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录
 ```
 
-- **比执行结果，不比 SQL 字符串**：行内值排序、行间集合比对，容忍列别名和列顺序
+- **比执行结果，不比 SQL 字符串**：行内值排序、行间集合比对，容忍列别名和列顺序。
+  数值比到题面要求的小数位（"保留 N 位小数"，没写就是 2 位），取整规则和 SQLite 的
+  `ROUND` 一致
 - **分指标统计**：首轮检索召回、Schema 召回（含兜底）、执行准确率、陷阱题诚实率、端到端，
   分开看才知道错在哪一环
 - **`--repeat`**：关键词抽取不确定，单次运行有约 ±5% 波动，按多数判定

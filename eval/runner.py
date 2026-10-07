@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import re
 import sqlite3
 import subprocess
@@ -30,6 +31,7 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Context, Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -112,7 +114,16 @@ BANKS = {
 # Schema 支撑不了时，CoT 里应该出现的措辞
 MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不支持", "不足")
 
+# 题面没说保留几位小数时，比到小数点后 2 位
 FLOAT_NDIGITS = 2
+
+# 题面里的"保留 N 位小数"。留出集三有 4 道要 3~4 位、1 道要 1 位，原先一律比 2 位：
+# 要 4 位的转化率第 3、4 位算错照样判对。
+_NDIGITS_PATTERN = re.compile(r"保留\s*([0-9一二两三四五六七八九])\s*位")
+_CHINESE_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+# 取整用的上下文：精度给足，1e30 这样的大数取到小数点后几位也不溢出
+_ROUNDING_CONTEXT = Context(prec=400)
 
 # --save-runs 里每次运行留几行结果样本：够看出错在哪，又不至于把文件撑大
 SAMPLE_ROWS = 20
@@ -277,7 +288,37 @@ class CaseOutcome:
         return len(self.hit_columns) / total
 
 
-def normalize_value(value: Any) -> str:
+def case_ndigits(case: EvalCase) -> int:
+    """
+    这道题比到小数点后几位：按题面的"保留 N 位小数"，没写就是 FLOAT_NDIGITS。
+
+    取整当作格式问题：题目要 4 位，模型没取整交了 0.123456，比到 4 位照样算对。
+    同一句里出现几个不同的位数时取最多的那个——宁严勿松；现有题库里没有这种题。
+    """
+    found = [
+        int(token) if token.isdigit() else _CHINESE_DIGITS[token]
+        for token in _NDIGITS_PATTERN.findall(case.query)
+    ]
+    return max(found) if found else FLOAT_NDIGITS
+
+
+def round_like_sqlite(number: float, ndigits: int) -> Decimal:
+    """
+    按 SQLite ROUND 的规则取整：看浮点数的真实二进制值，正好一半时远离零。
+
+    参考 SQL 多半用 ROUND 取过整，模型的 SQL 可能没取。原先用 Python 的 round，
+    它正好一半时取偶数：0.125 取 2 位，SQLite 得 0.13，round 得 0.12，同一个值判成两样。
+    20 万个落在边界附近的随机值上，round 和 SQLite 不一致 663 次，这里 19 次——剩下的
+    是 SQLite 内部十进制转换的细节，只在"一边取了整、一边没取、值又正好卡在一半"时才碰得上。
+    """
+    quantum = Decimal(1).scaleb(-ndigits)
+    rounded = Decimal(number).quantize(quantum, rounding=ROUND_HALF_UP, context=_ROUNDING_CONTEXT)
+    # -0.001 取 2 位得 -0.00，和参考答案的 0.00 字面不同，把负零的符号去掉。
+    # 不用 rounded + 0：加法走默认的 28 位精度，会把大数再截一次
+    return rounded.copy_abs() if rounded.is_zero() else rounded
+
+
+def normalize_value(value: Any, ndigits: int = FLOAT_NDIGITS) -> str:
     """把单元格归一化成可比较的字符串。"""
     if value is None:
         return "∅"
@@ -286,25 +327,38 @@ def normalize_value(value: Any) -> str:
         return str(value)
 
     if isinstance(value, (int, float)):
-        return f"{round(float(value), FLOAT_NDIGITS):.{FLOAT_NDIGITS}f}"
+        number = float(value)
+    else:
+        text = str(value).strip()
 
-    text = str(value).strip()
+        # 数字型字符串也按数值归一，避免 "53" 和 "53.0" 判不一致
+        try:
+            number = float(text)
+        except ValueError:
+            return text
 
-    # 数字型字符串也按数值归一，避免 "53" 和 "53.0" 判不一致
-    try:
-        return f"{round(float(text), FLOAT_NDIGITS):.{FLOAT_NDIGITS}f}"
-    except ValueError:
-        return text
+        # float("Nan")、float("Infinity") 也能解析——叫 Nan 的名字不能当成数字
+        if not math.isfinite(number):
+            return text
+
+    if not math.isfinite(number):
+        return str(number)
+
+    return f"{round_like_sqlite(number, ndigits):f}"
 
 
-def normalize_rows(rows: Sequence[Dict[str, Any]], ordered: bool) -> List[Tuple[str, ...]]:
+def normalize_rows(
+    rows: Sequence[Dict[str, Any]],
+    ordered: bool,
+    ndigits: int = FLOAT_NDIGITS,
+) -> List[Tuple[str, ...]]:
     """
     把结果集归一化成可比较的形式。
 
     只比**值**，不比列名——同一个问题，列别名可以叫 gmv、total_gmv、
     SUM(d.gmv)，都是对的。行内值排序则是为了容忍列顺序不同。
     """
-    normalized = [tuple(sorted(normalize_value(v) for v in row.values())) for row in rows]
+    normalized = [tuple(sorted(normalize_value(v, ndigits) for v in row.values())) for row in rows]
     return normalized if ordered else sorted(normalized)
 
 
@@ -464,7 +518,9 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
 
     actual = execution.get("rows") or []
 
-    if normalize_rows(actual, case.ordered) == normalize_rows(expected, case.ordered):
+    ndigits = case_ndigits(case)
+
+    if normalize_rows(actual, case.ordered, ndigits) == normalize_rows(expected, case.ordered, ndigits):
         return CaseOutcome(status="pass", generated_sql=generated_sql, **base)
 
     return CaseOutcome(
