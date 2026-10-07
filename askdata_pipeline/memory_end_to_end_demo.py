@@ -115,7 +115,15 @@ def main() -> None:
         )
         print(f"路由结果：{first.decision.route.value}")
         print(f"路由原因：{first.decision.reason}")
-        print_pipeline_result(first.pipeline_result)
+
+        # 复用同一组 --user-id / --session-id 再跑时，会话里已经有这道题的结果，
+        # 路由判为追问、不再查库，pipeline_result 为空。这是路由的正确行为；
+        # 原先这里默认第一轮必定查库，直接读 pipeline_result，第二次运行就崩。
+        if first.pipeline_result is None:
+            print("本轮没有查库，直接用会话里的历史结果回答：")
+            print(first.answer)
+        else:
+            print_pipeline_result(first.pipeline_result)
 
         first_context = memory.get_context(
             user_id=user_id,
@@ -125,15 +133,19 @@ def main() -> None:
         print_short_term_context(first_context.short_term)
 
         print_section("3. 模拟用户点击“保存到个人知识库”")
-        saved = service.save_result_to_personal_knowledge_base(
-            user_id=user_id,
-            result=first.pipeline_result,
-        )
-        print(f"长期记忆 ID：{saved.id}")
-        print(f"记忆类型：{saved.kind.value}")
-        print(f"检索摘要：{preview(saved.summary)}")
-        print("结构化元信息：")
-        print(json.dumps(saved.metadata, ensure_ascii=False, indent=2, default=str))
+        if first.pipeline_result is None:
+            # 没有新的查询结果可存；上一次运行已经存过，再存只会重复
+            print("跳过：本轮没有新的查询结果，之前的运行已经保存过，第 4 步会召回它。")
+        else:
+            saved = service.save_result_to_personal_knowledge_base(
+                user_id=user_id,
+                result=first.pipeline_result,
+            )
+            print(f"长期记忆 ID：{saved.id}")
+            print(f"记忆类型：{saved.kind.value}")
+            print(f"检索摘要：{preview(saved.summary)}")
+            print("结构化元信息：")
+            print(json.dumps(saved.metadata, ensure_ascii=False, indent=2, default=str))
 
         print_section("4. 第二轮：读取短期上下文，并开启长期记忆召回")
         second = service.run(

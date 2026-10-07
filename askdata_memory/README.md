@@ -65,6 +65,7 @@ memory.save_structured_result(
 
 ```bash
 python -m askdata_pipeline.memory_end_to_end_demo
+bash run_memory.sh          # 固定用户和会话 ID，重复运行能接着上一次的记忆
 python -m unittest tests.test_memory tests.test_routing
 ```
 
