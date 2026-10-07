@@ -97,6 +97,14 @@ class PipelineResult:
     这个字段"——答案恒为是。检索到底漏没漏，只有首轮这份看得见。
     """
 
+    sql_trace: List[Dict[str, Any]] = field(default_factory=list)
+    """
+    这次运行真正执行过的每一条 SQL，按执行顺序，包括后来被替换掉的。
+
+    step_logs 只留最终交出去的那一版；守卫重规划前的首轮 SQL、回调修正前报错的
+    SQL、自洽性投票落选的几次，都只在这里。字段含义见 text2sql_pipeline._trace_entry。
+    """
+
     diagnostics: List[Diagnostic] = field(default_factory=list)
     """
     本次运行发生的静默降级记录。
@@ -114,6 +122,7 @@ class PipelineResult:
             "schema_context": self.schema_context,
             "retrieval_context": self.retrieval_context,
             "cot_output": self.cot_output,
+            "sql_trace": self.sql_trace,
             "diagnostics": [item.render() for item in self.diagnostics],
             "step_logs": [
                 {

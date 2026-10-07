@@ -115,6 +115,7 @@ python -m eval.runner --dataset chinook --repeat 3
 python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
+python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录
 ```
 
 - **比执行结果，不比 SQL 字符串**：行内值排序、行间集合比对，容忍列别名和列顺序
@@ -123,6 +124,9 @@ python -m eval.runner --bank holdout3 --repeat 3                # 留出集（�
 - **`--repeat`**：关键词抽取不确定，单次运行有约 ±5% 波动，按多数判定
 - **熔断**：断网、Key 失效、余额耗尽这类故障连续 3 次就中止，而且一个百分比都不输出——
   半截数据算出来的准确率比没有更危险
+- **`--save-runs`**：每次运行追加一行 JSON，带提交号、判定、降级详情、CoT 原文、结果样本，
+  以及 `sql_trace`——执行过的每一条 SQL，包括守卫重规划前的首轮 SQL、回调修正前报错的 SQL、
+  自洽性投票落选的几次。逐行落盘，评测中途熔断也不丢
 - 并行跑时每个进程用不同的 `--db-path`，否则几个进程同时重建同一个库会报 disk I/O error
 
 ## 降级告警

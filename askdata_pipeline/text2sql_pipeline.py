@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from cot_planning import CotPlanner, ThinkingModelClient, ThinkingModelConfig
 from askdata_diagnostics import Codes, collect, emit
@@ -39,6 +39,37 @@ from .objects import PipelineConfig, PipelineResult, StepExecutionLog
 
 # CoT 判定"Schema 支撑不了"时会在四元组里留下的标记
 MISSING_SCHEMA_MARKERS = ("缺失", "无法支撑", "不存在", "未找到", "没有该字段", "不支持")
+
+
+def _trace_entry(
+    attempt: int,
+    guard_retry: bool,
+    full_schema: bool,
+    step: int,
+    kind: str,
+    sql: str,
+    execution_result,
+) -> Dict[str, Any]:
+    """
+    sql_trace 里的一条：一次真正执行过的 SQL。
+
+    attempt     自洽性投票的第几次（不开投票时恒为 1）
+    phase       首轮 / 守卫重规划
+    full_schema 这次规划看的是不是全量 Schema（拒答复核或守卫重规划触发）
+    step        CoT 第几步
+    kind        生成 / 修正（执行报错后的回调修正）
+    """
+    return {
+        "attempt": attempt,
+        "phase": "守卫重规划" if guard_retry else "首轮",
+        "full_schema": full_schema,
+        "step": step,
+        "kind": kind,
+        "sql": " ".join((sql or "").split()),
+        "success": bool(execution_result.success),
+        "error": str(execution_result.error or "") if not execution_result.success else "",
+        "row_count": len(execution_result.rows or []) if execution_result.success else 0,
+    }
 
 
 def _is_missing_schema_step(cot_step) -> bool:
@@ -140,13 +171,16 @@ class AskDataText2SQLPipeline:
         retrieval_context = schema_graph.to_prompt_context()
 
         runs = max(1, self.config.self_consistency_runs)
+        sql_trace: List[Dict[str, Any]] = []
         attempts = [
             self._plan_and_execute(
                 contextual_query,
                 schema_graph,
                 guard_query=effective_query,
+                trace=sql_trace,
+                attempt=attempt,
             )
-            for _ in range(runs)
+            for attempt in range(1, runs + 1)
         ]
 
         cot_result, step_logs, schema_graph = self._vote(attempts, schema_graph)
@@ -159,6 +193,7 @@ class AskDataText2SQLPipeline:
             retrieval_context=retrieval_context,
             cot_output=cot_result.raw_output,
             step_logs=step_logs,
+            sql_trace=sql_trace,
             diagnostics=self.setup_diagnostics + list(diagnostics),
         )
 
@@ -168,13 +203,21 @@ class AskDataText2SQLPipeline:
         schema_graph,
         guard_query: str = "",
         guard_retry: bool = False,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        attempt: int = 1,
     ):
         """
         跑一次完整的「CoT 规划 → SQL 生成 → 执行」。
 
         抽出来是为了让外层可以重复调用做自洽性投票。
         检索结果不在这里，因为它是确定的，重跑没有意义也白花钱。
+
+        trace 收集这一路上执行过的每一条 SQL，包括后来被替换掉的：守卫重规划前的
+        首轮 SQL、回调修正前报错的 SQL、自洽性投票里落选的那几次。step_logs 只留
+        最终那一版——H3E13 当时就是因为首轮 SQL 没留下来，没法确认是不是守卫带错的。
         """
+        trace = trace if trace is not None else []
+        full_schema = guard_retry
         cot_result = self.cot_planner.plan(
             user_query=contextual_query,
             schema_graph=schema_graph,
@@ -206,6 +249,7 @@ class AskDataText2SQLPipeline:
                 )
                 cot_result = retry_result
                 schema_graph = full_graph
+                full_schema = True
 
         schema_store = LocalSchemaStore.from_schema_graph(schema_graph)
 
@@ -246,6 +290,10 @@ class AskDataText2SQLPipeline:
 
             execution_request = sql_result.to_execution_request()
             execution_result = self.mcp_router.execute(execution_request)
+            trace.append(_trace_entry(
+                attempt, guard_retry, full_schema, len(step_logs) + 1, "生成",
+                sql_result.sql, execution_result,
+            ))
 
             # 执行失败就把报错喂回模型重新生成。
             # 执行器的报错是一手信息——"no such column: fact_order.category_id"
@@ -266,6 +314,10 @@ class AskDataText2SQLPipeline:
                 )
                 execution_request = sql_result.to_execution_request()
                 execution_result = self.mcp_router.execute(execution_request)
+                trace.append(_trace_entry(
+                    attempt, guard_retry, full_schema, len(step_logs) + 1, "修正",
+                    sql_result.sql, execution_result,
+                ))
 
                 if execution_result.success:
                     emit(
@@ -323,6 +375,8 @@ class AskDataText2SQLPipeline:
                 self._build_full_schema_graph(),
                 guard_query=guard_query,
                 guard_retry=True,
+                trace=trace,
+                attempt=attempt,
             )
 
         if dropped:

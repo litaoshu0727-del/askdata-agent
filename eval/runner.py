@@ -21,9 +21,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import unicodedata
@@ -112,6 +114,68 @@ MISSING_MARKERS = ("缺失", "无法", "不存在", "未找到", "没有", "不�
 
 FLOAT_NDIGITS = 2
 
+# --save-runs 里每次运行留几行结果样本：够看出错在哪，又不至于把文件撑大
+SAMPLE_ROWS = 20
+
+
+class RunRecorder:
+    """
+    --save-runs：每次运行写一行 JSON，跑完一次立刻落盘。
+
+    评测本来只在终端打印汇总，SQL、降级详情跑完就丢了。H3E13 当时没法确认是不是
+    守卫带错的，就是因为首轮 SQL 没有留存，最后只能另搭对照实验重跑。
+
+    追加写入，不覆盖：每行带 run_id 和提交号，多次评测写进同一个文件也分得开。
+    逐行 flush：评测中途熔断时，已经跑完的记录照样留着。
+    """
+
+    def __init__(self, path: Path, meta: Dict[str, Any]):
+        self.path = path
+        self.meta = meta
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = path.open("a", encoding="utf-8")
+
+    def write(self, outcome: "CaseOutcome", arm: str, repeat_index: int) -> None:
+        record = {
+            **self.meta,
+            "arm": arm,
+            "case_id": outcome.case.id,
+            "query": outcome.case.query,
+            "repeat": repeat_index,
+            "attempts": outcome.attempts,
+            "status": outcome.status,
+            "detail": outcome.detail,
+            "elapsed": round(outcome.elapsed, 2),
+            "generated_sql": outcome.generated_sql,
+            "missed_columns": outcome.missed_columns,
+            "first_pass_missed": outcome.first_pass_missed,
+            **outcome.trace,
+        }
+        self._file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def git_revision() -> str:
+    """当前提交号；工作区有未提交改动时带 -dirty，免得把没提交的版本当成那个提交。"""
+    root = Path(__file__).resolve().parent.parent
+
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+    return f"{commit}-dirty" if dirty else commit
+
 # 持续性故障：重试毫无意义，环境本身不通
 PERSISTENT_ERROR_PATTERNS = (
     "nodename nor servname",               # macOS DNS 解析失败
@@ -194,6 +258,9 @@ class CaseOutcome:
     detail: str = ""
     elapsed: float = 0.0
     diagnostics: List[str] = field(default_factory=list)
+
+    trace: Dict[str, Any] = field(default_factory=dict)
+    """--save-runs 要写的过程记录：SQL 轨迹、降级详情、CoT 原文、结果样本。"""
 
     @property
     def passed(self) -> bool:
@@ -346,6 +413,7 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
 
     elapsed = time.time() - started
     hit_columns = parse_hit_columns(result.schema_context)
+    last_execution = result.step_logs[-1].execution_result if result.step_logs else {}
     matched, missed = score_requirements(case.must_hit_columns, hit_columns)
     diagnostics = [item.code for item in result.diagnostics]
 
@@ -364,6 +432,16 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
         first_pass_missed=first_missed,
         elapsed=elapsed,
         diagnostics=diagnostics,
+        trace={
+            "rewritten_query": result.rewritten_query,
+            "keywords": result.keywords,
+            "diagnostics": [item.render() for item in result.diagnostics],
+            "cot_output": result.cot_output,
+            "sql_trace": result.sql_trace,
+            "expected_rows": len(expected),
+            "expected_sample": expected[:SAMPLE_ROWS],
+            "actual_sample": (last_execution.get("rows") or [])[:SAMPLE_ROWS],
+        },
     )
 
     if case.expect_unanswerable:
@@ -979,6 +1057,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--db-path", default="")
+    parser.add_argument(
+        "--save-runs", default="",
+        help="把每次运行的 SQL 轨迹、降级详情、CoT 和结果样本追加写入这个 JSONL 文件",
+    )
     return parser
 
 
@@ -1039,6 +1121,19 @@ def main() -> None:
     results: Dict[str, List[CaseAggregate]] = {arm: [] for arm in arms}
     consecutive_infra_failures = 0
 
+    recorder = None
+    if args.save_runs:
+        recorder = RunRecorder(Path(args.save_runs), {
+            "run_id": time.strftime("%Y%m%d-%H%M%S"),
+            "commit": git_revision(),
+            "dataset": args.dataset,
+            "bank": args.bank,
+            "self_consistency": args.self_consistency,
+            "repair": args.repair,
+        })
+        print(f"过程记录：{args.save_runs}（run_id {recorder.meta['run_id']}，"
+              f"提交 {recorder.meta['commit']}）")
+
     try:
         for index, case in enumerate(cases, start=1):
             print(f"  [{index}/{len(cases)}] {case.id} {case.query}", flush=True)
@@ -1048,9 +1143,12 @@ def main() -> None:
             for arm in arms:
                 aggregate = CaseAggregate(case=case)
 
-                for _ in range(repeat):
+                for repeat_index in range(1, repeat + 1):
                     outcome = run_case_with_retry(pipelines[arm], db_path, case, args.retries)
                     aggregate.outcomes.append(outcome)
+
+                    if recorder:
+                        recorder.write(outcome, arm, repeat_index)
 
                     if outcome.status == "crash" and classify_error(outcome.detail) in {
                         "persistent",
@@ -1081,6 +1179,10 @@ def main() -> None:
     except EvalAborted as aborted:
         report_aborted(aborted, [item for arm in arms for item in results[arm]])
         sys.exit(2)
+
+    finally:
+        if recorder:
+            recorder.close()
 
     for arm in arms:
         if len(arms) > 1:
