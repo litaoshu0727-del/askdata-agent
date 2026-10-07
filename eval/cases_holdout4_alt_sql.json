@@ -1,0 +1,31 @@
+{
+  "H4E04": [
+    "SELECT s.shop_type, ROUND(100.0 * SUM(i.item_discount_amount) / SUM(i.item_price * i.quantity), 2) AS discount_pct FROM fact_order_item i JOIN fact_order o ON i.order_id = o.order_id JOIN dim_shop s ON o.shop_id = s.shop_id GROUP BY s.shop_type"
+  ],
+  "H4E12": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay FROM fact_order o JOIN dim_user u ON o.user_id = u.user_id WHERE o.pay_time IS NOT NULL GROUP BY u.user_id, u.user_name ORDER BY SUM(o.pay_amount) DESC LIMIT 3",
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay FROM fact_order o JOIN dim_user u ON o.user_id = u.user_id WHERE o.order_status IN ('已完成', '已支付', '已退款') GROUP BY u.user_id, u.user_name ORDER BY SUM(o.pay_amount) DESC LIMIT 3"
+  ],
+  "H4E15": [
+    "SELECT s.shop_name, ROUND(SUM(CASE WHEN date(o.create_time) BETWEEN '2024-05-01' AND '2024-05-15' AND o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END), 2) AS first_half, ROUND(SUM(CASE WHEN date(o.create_time) BETWEEN '2024-05-16' AND '2024-05-30' AND o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END), 2) AS second_half FROM fact_order o JOIN dim_shop s ON o.shop_id = s.shop_id GROUP BY s.shop_id, s.shop_name"
+  ],
+  "H4E20": [
+    "SELECT o.channel, ROUND(100.0 * COUNT(r.order_id) / COUNT(*), 2) AS refund_pct FROM fact_order o LEFT JOIN (SELECT DISTINCT order_id FROM fact_refund) r ON o.order_id = r.order_id GROUP BY o.channel"
+  ],
+  "H4E21": [
+    "SELECT ROUND(SUM(p.pay_amount), 2) AS pay_total FROM fact_payment p JOIN fact_order o ON p.order_id = o.order_id WHERE p.pay_channel = '花呗分期' AND o.channel = '直播间'"
+  ],
+  "H4E24": [
+    "SELECT ROUND(AVG((julianday(o.finish_time) - julianday(p.pay_time)) * 24), 2) AS avg_hours FROM fact_order o JOIN fact_payment p ON o.order_id = p.order_id WHERE o.order_status = '已完成'"
+  ],
+  "H4E25": [
+    "SELECT u.member_level, COUNT(*) AS user_cnt, ROUND(AVG(t.total_pay), 2) AS avg_total_pay FROM (SELECT user_id, MAX(create_time) AS last_time, SUM(CASE WHEN pay_time IS NOT NULL THEN pay_amount ELSE 0 END) AS total_pay FROM fact_order GROUP BY user_id) t JOIN dim_user u ON t.user_id = u.user_id WHERE t.last_time >= '2024-05-25' GROUP BY u.member_level"
+  ],
+  "H4E28": [
+    "SELECT u.gender, COUNT(*) AS user_cnt FROM dws_user_summary s JOIN dim_user u ON s.user_id = u.user_id WHERE s.refund_order_count > 0 GROUP BY u.gender",
+    "SELECT u.gender, COUNT(DISTINCT o.user_id) AS user_cnt FROM fact_refund r JOIN fact_order o ON r.order_id = o.order_id JOIN dim_user u ON o.user_id = u.user_id GROUP BY u.gender"
+  ],
+  "H4C12": [
+    "WITH cs AS (SELECT i.BillingCountry AS country, i.CustomerId, c.FirstName, c.LastName, SUM(i.Total) AS amt FROM Invoice i JOIN Customer c ON c.CustomerId = i.CustomerId GROUP BY i.BillingCountry, i.CustomerId, c.FirstName, c.LastName), r AS (SELECT country, FirstName, LastName, amt, ROW_NUMBER() OVER (PARTITION BY country ORDER BY amt DESC) AS rn, COUNT(*) OVER (PARTITION BY country) AS n, SUM(amt) OVER (PARTITION BY country) AS tot FROM cs) SELECT country, FirstName, LastName, ROUND(100.0 * amt / tot, 2) AS share_pct FROM r WHERE rn = 1 AND n >= 4"
+  ]
+}

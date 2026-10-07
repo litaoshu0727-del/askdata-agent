@@ -105,10 +105,26 @@ HOLDOUT3_BANKS = {
     "chinook": HOLDOUT3_CHINOOK_CASES,
 }
 
+# 第四套：验证第三套之后的四处改动——时间字段只留保底、整数除法规则、筛选值守卫
+# 跳过题目自带口径的取值、候选池按关键词保底。冻结后才第一次运行。
+try:
+    from eval.cases_holdout4 import (  # noqa: E402
+        HOLDOUT4_CHINOOK_CASES,
+        HOLDOUT4_ECOMMERCE_CASES,
+    )
+except ImportError:
+    HOLDOUT4_ECOMMERCE_CASES, HOLDOUT4_CHINOOK_CASES = [], []
+
+HOLDOUT4_BANKS = {
+    "ecommerce": HOLDOUT4_ECOMMERCE_CASES,
+    "chinook": HOLDOUT4_CHINOOK_CASES,
+}
+
 BANKS = {
     "holdout": HOLDOUT_BANKS,
     "holdout2": HOLDOUT2_BANKS,
     "holdout3": HOLDOUT3_BANKS,
+    "holdout4": HOLDOUT4_BANKS,
 }
 
 # Schema 支撑不了时，CoT 里应该出现的措辞
@@ -491,7 +507,8 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
             "keywords": result.keywords,
             "diagnostics": [item.render() for item in result.diagnostics],
             "cot_output": result.cot_output,
-            "sql_trace": result.sql_trace,
+            # 旧版本的链路没有 sql_trace；拿当前评测器跑旧版本做对照时也要能用
+            "sql_trace": getattr(result, "sql_trace", []),
             "expected_rows": len(expected),
             "expected_sample": expected[:SAMPLE_ROWS],
             "actual_sample": (last_execution.get("rows") or [])[:SAMPLE_ROWS],
@@ -1099,10 +1116,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
-            "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）"
+            "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）；"
+            "holdout4 是第四套盲写留出集（ecommerce + Chinook）"
         ),
     )
     parser.add_argument(
@@ -1153,7 +1171,7 @@ def main() -> None:
 
     print("=" * 92)
     bank_label = {
-        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三",
+        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四",
     }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
     print("=" * 92)
