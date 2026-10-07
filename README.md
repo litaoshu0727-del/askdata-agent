@@ -1,5 +1,7 @@
 # AskData Text2SQL
 
+[![tests](https://github.com/litaoshu0727-del/askdata-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/litaoshu0727-del/askdata-agent/actions/workflows/tests.yml)
+
 自然语言问题 → Schema 检索 → CoT 规划 → SQL 生成 → 执行，一条可评测、出错会告警的
 Text2SQL 链路。
 
@@ -163,4 +165,5 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 python -m unittest discover -s tests
 ```
 
-单元测试不读 `.env`、不调真实模型，几秒跑完。
+单元测试不读 `.env`、不调真实模型，几秒跑完。每次推送和 PR 由 GitHub Actions 自动跑一遍
+（[tests.yml](.github/workflows/tests.yml)），装 `requirements.txt` 里除本地模型那组以外的依赖。
