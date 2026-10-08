@@ -185,6 +185,14 @@ class HybridSchemaRetrievalConfig:
     )
     """RRF 融合配置。"""
 
+    bridge_max_tables: int = 3
+    """
+    几个关键词落在的表之间不连通时，最多沿外键补几张桥接表，0 表示不补。
+
+    锚点是每个关键词自己排第 1 的字段所在的表（只融合这个词自己的几路召回，和候选池
+    保底同一套排名）。原因和判据见 graph_builder._bridge_tables。
+    """
+
     rerank_top_multiplier: int = 2
     """
     Rerank 输出数量倍数。
@@ -429,6 +437,8 @@ class HybridSchemaRetrievalService:
             schema_hits=schema_hits,
         )
 
+        anchor_tables = self._anchor_tables(route_results)
+
         schema_graph = build_schema_graph(
             hits=schema_hits,
             tables=self.tables,
@@ -436,7 +446,16 @@ class HybridSchemaRetrievalService:
             relations=self.relations,
             include_join_columns=self.config.include_join_columns,
             include_label_columns=self.config.include_label_columns,
+            anchor_tables=anchor_tables,
+            max_bridge_tables=self.config.bridge_max_tables,
         )
+
+        if schema_graph.bridge_tables:
+            emit(
+                Codes.JOIN_PATH_BRIDGED,
+                "关键词落在的表之间不连通，已沿外键补上桥接表",
+                桥接表="、".join(schema_graph.bridge_tables),
+            )
         return HybridSchemaRetrievalResult(
             query=query,
             keywords=resolved_keywords,
@@ -699,6 +718,16 @@ class HybridSchemaRetrievalService:
         )
 
         return schema_hits
+
+    def _anchor_tables(self, route_results: List[RouteRecallResult]) -> List[str]:
+        """每个关键词自己排第 1 的字段所在的表。"""
+        anchors = []
+
+        for ranking in self.rrf_client.term_rankings(route_results).values():
+            if ranking:
+                anchors.append(self.documents[ranking[0]].column.table_name)
+
+        return anchors
 
     def _resolve_keywords(
         self,

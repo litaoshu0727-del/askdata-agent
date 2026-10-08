@@ -148,6 +148,22 @@ class RRFFusionClient:
 
         return leaders
 
+    def term_rankings(self, route_results: List[RouteRecallResult]) -> Dict[str, List[int]]:
+        """每个检索词只融合自己那几路召回，返回它自己的排名（文档下标，从高到低）。"""
+        term_scores: Dict[str, Dict[int, float]] = {}
+
+        for route_result in route_results:
+            route_weight = self.config.route_weights.get(route_result.route_name, 1.0)
+            scores = term_scores.setdefault(route_result.query_term, {})
+
+            for rank, doc_index in enumerate(route_result.ranked_doc_indices, start=1):
+                scores[doc_index] = scores.get(doc_index, 0.0) + route_weight / (self.config.rrf_k + rank)
+
+        return {
+            term: [doc_index for doc_index, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
+            for term, scores in term_scores.items()
+        }
+
     def calculate_fused_top_k(self, keyword_count: int) -> int:
         """根据关键词数量动态计算融合候选截断数量。"""
         dynamic_top_k = keyword_count * self.config.truncate_multiplier

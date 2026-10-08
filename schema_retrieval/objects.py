@@ -105,6 +105,7 @@ class SchemaGraph:
     tables: Dict[str, TableSchema]  # 相关表集合
     columns: Dict[str, List[ColumnSchema]]  # 按表分组的相关字段
     relations: List[TableRelation]  # 相关表间关系
+    bridge_tables: List[str] = field(default_factory=list)  # 为连通补进来的桥接表，见 graph_builder._bridge_tables
 
     def to_prompt_context(self) -> str:
         """转换为可放入 Prompt 的 Schema 上下文。"""
