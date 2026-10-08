@@ -109,7 +109,8 @@ curl -L -o runtime_data/chinook.db \
 
 **换成自己的库**：照着 [ecommerce_data.py](askdata_pipeline/ecommerce_data.py) 写建表语句
 （外键一定要声明，表关系靠它提取）、业务元数据（别名和近义字段辨析最值钱）、在
-`_prepare_dataset()` 里加一个分支。检索参数默认按大库设置，新库不用调。
+`_prepare_dataset()` 里加一个分支。检索参数默认按大库设置，新库不用调；字段多到全量 Schema
+超过 4 万字时，复核自动改用有限扩展（`REVIEW_SCHEMA_BOUNDED` 会写明用了哪一级）。
 
 ## 评测
 
@@ -148,14 +149,17 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 | `FILTER_VALUE_DROPPED` | 问题提到的枚举取值没出现在 SQL 里，筛选条件疑似被丢 |
 | `TIME_FIELD_RESCUED` | 问题有时间约束，检索结果里缺时间字段，已补回 |
 | `JOIN_PATH_BRIDGED` | 关键词落在的表之间不连通，已沿外键补上桥接表和关联键 |
+| `REVIEW_SCHEMA_BOUNDED` | 全量 Schema 超出长度预算，复核 / 守卫重规划改用有限扩展，或不复核 |
 | `EMPTY_RESULT_SET` | SQL 成功但返回 0 行，多轮追问里常见于凭空推断的 ID |
 
 完整列表见 [askdata_diagnostics.py](askdata_diagnostics.py)。
 
 ## 局限与待办
 
-- **只在 SQLite、最多 81 个字段的库上测过。**全量复核的前提是整份 Schema 能放进提示词；
-  换成放不下的大库，现在靠复核救回的那些题就会变成错答案
+- **只在 SQLite、最多 81 个字段的库上测过。**拒答复核和筛选值守卫重规划会把全量 Schema
+  摆出来（约 200 字一个字段）；超出 `review_schema_char_budget`（默认 4 万字）时改用有限扩展——
+  选中表的全部字段，能放下时再加外键一跳，都放不下就不复核。库越大复核越不完整，这条退路
+  还没在真实的大库上测过
 - **三处改动在陌生题上还没有可帮的题**：时间字段只留保底、筛选值守卫跳过题目自带口径的取值、
   候选池按关键词保底。第四套里没有题落在它们针对的失败形态上，收益未测出，代价也未测出
 - **判分的局限**：每行的值先排序再比，把员工和上级的名字对调也会判对

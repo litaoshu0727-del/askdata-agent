@@ -92,6 +92,12 @@ class Codes:
     时间是约束不是主题，长问题里时间字段常被排到垫底。
     """
 
+    REVIEW_SCHEMA_BOUNDED = "REVIEW_SCHEMA_BOUNDED"
+    """
+    全量 Schema 超出长度预算，拒答复核 / 筛选值守卫重规划改用有限扩展（选中表的全部字段，
+    能放下时再加外键一跳）；连选中表都放不下时不复核、不重规划。库越大，复核越不完整。
+    """
+
     JOIN_PATH_BRIDGED = "JOIN_PATH_BRIDGED"
     """
     几个关键词落在的表之间不连通，已沿外键补上桥接表和它们的关联键。问题要走的连接

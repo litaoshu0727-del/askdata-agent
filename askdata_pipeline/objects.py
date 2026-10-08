@@ -35,6 +35,15 @@ class PipelineConfig:
     代价是 N 倍的 CoT 与 SQL 生成开销，检索结果复用不重跑。
     """
 
+    review_schema_char_budget: int = 40000
+    """
+    拒答复核和筛选值守卫重规划时，交给 CoT 的 Schema 最多多少字。0 表示不设上限。
+
+    两处都把全量 Schema 摆出来重新规划。每个字段约 200 字：ecommerce 81 个字段约 1.5 万字，
+    放得下；几百个字段的业务库就是十几万字，超出上下文，调用直接失败——偏偏是在最需要
+    复核的时候。超出预算时改用有限扩展，见 AskDataText2SQLPipeline._review_schema_graph。
+    """
+
     dataset: str = "trade"
     """
     使用哪套数据集。

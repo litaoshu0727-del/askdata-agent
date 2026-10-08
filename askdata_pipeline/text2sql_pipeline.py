@@ -55,7 +55,8 @@ def _trace_entry(
 
     attempt     自洽性投票的第几次（不开投票时恒为 1）
     phase       首轮 / 守卫重规划
-    full_schema 这次规划看的是不是全量 Schema（拒答复核或守卫重规划触发）
+    full_schema 这次规划看的是不是复核用的 Schema（拒答复核或守卫重规划触发；
+                放得下是全量，超出长度预算时是有限扩展，见 _review_schema_graph）
     step        CoT 第几步
     kind        生成 / 修正（执行报错后的回调修正）
     """
@@ -231,24 +232,25 @@ class AskDataText2SQLPipeline:
         #
         # 所以拒答必须建立在完整信息上：把全量 Schema 摆出来重新规划一次，
         # 只有在看过全部字段之后仍然判缺失，这个拒答才可信。
-        if any(_is_missing_schema_step(step) for step in cot_result.steps):
-            full_graph = self._build_full_schema_graph()
+        missing = any(_is_missing_schema_step(step) for step in cot_result.steps)
+        review_graph = self._review_schema_graph(schema_graph) if missing else None
 
+        if review_graph is not None:
             retry_result = self.cot_planner.plan(
                 user_query=contextual_query,
-                schema_graph=full_graph,
+                schema_graph=review_graph,
             )
 
             if not any(_is_missing_schema_step(step) for step in retry_result.steps):
-                # 全量 Schema 下能答 —— 说明刚才是检索漏了，不是库里没有。
+                # 看过更完整的 Schema 能答 —— 说明刚才是检索漏了，不是库里没有。
                 # 模型的"缺失"声明因此成了一个高质量的召回失败信号。
                 emit(
                     Codes.SCHEMA_RECALL_MISS,
-                    "CoT 判缺失但全量 Schema 下可以回答，实为检索漏召回，已用全量 Schema 重规划",
+                    "CoT 判缺失但看过更完整的 Schema 后可以回答，实为检索漏召回，已重规划",
                     问题=contextual_query[:60],
                 )
                 cot_result = retry_result
-                schema_graph = full_graph
+                schema_graph = review_graph
                 full_schema = True
 
         schema_store = LocalSchemaStore.from_schema_graph(schema_graph)
@@ -362,24 +364,37 @@ class AskDataText2SQLPipeline:
         # 这里拿数据库的取值当裁判，不依赖 CoT 自觉。
         dropped = self._find_dropped_filters(guard_query, step_logs)
 
+        guard_graph = None
         if dropped and not guard_retry:
+            # 被丢的取值所属的表一定要在重规划的 Schema 里
+            owning_tables = {column.split(".", 1)[0] for item in dropped for column in item.columns}
+            guard_graph = self._review_schema_graph(schema_graph, extra_tables=owning_tables)
+
+        if guard_graph is not None:
             emit(
                 Codes.FILTER_VALUE_DROPPED,
-                "问题提到的取值没有出现在 SQL 里，筛选条件疑似被丢，已用全量 Schema 带提示重规划",
+                "问题提到的取值没有出现在 SQL 里，筛选条件疑似被丢，已带提示重规划",
                 取值="、".join(item.render() for item in dropped),
                 问题=guard_query[:60],
             )
 
             return self._plan_and_execute(
                 contextual_query + self._dropped_filter_hint(dropped),
-                self._build_full_schema_graph(),
+                guard_graph,
                 guard_query=guard_query,
                 guard_retry=True,
                 trace=trace,
                 attempt=attempt,
             )
 
-        if dropped:
+        if dropped and not guard_retry:
+            emit(
+                Codes.FILTER_VALUE_DROPPED,
+                "问题提到的取值没有出现在 SQL 里，结果可能缺了筛选条件；Schema 超出长度预算，没有重规划",
+                取值="、".join(item.render() for item in dropped),
+                问题=guard_query[:60],
+            )
+        elif dropped:
             # 重规划之后还是没用上。不再重试——结果照常交出，但留下记录，
             # 至少不再是零告警。
             emit(
@@ -524,6 +539,84 @@ class AskDataText2SQLPipeline:
             keyword_extractor=None,
             config=self._build_retrieval_config(),
             sample_size=self.config.sample_size,
+        )
+
+    def _review_schema_graph(self, base_graph, extra_tables=()):
+        """
+        拒答复核 / 筛选值守卫重规划用的 Schema。返回 None 表示放不下，不复核。
+
+        放得下就给全量——当前三个库都远在预算内，行为和原来一样。放不下时逐级收：
+
+            选中表的全部字段 + 外键一跳的表   检索选中了表、漏了表里的字段，或差一张相邻的表
+            选中表的全部字段                 只补表内漏掉的字段
+            都放不下                         不复核：塞不进提示词的复核只会让调用失败
+
+        全量复核救回过的 13 次运行（E19、E55、H3C11、H4C09），两级扩展都包含了必中字段。
+        """
+        budget = self.config.review_schema_char_budget
+        full = self._build_full_schema_graph()
+        full_size = self._full_schema_size()
+
+        if budget <= 0 or full_size <= budget:
+            return full
+
+        selected = set(base_graph.tables) | set(extra_tables)
+        neighbors = set(selected)
+        for relation in self.schema_retrieval_service.relations:
+            if relation.source_table in selected:
+                neighbors.add(relation.target_table)
+            if relation.target_table in selected:
+                neighbors.add(relation.source_table)
+
+        for label, tables in (("选中表的全部字段及外键一跳", neighbors), ("选中表的全部字段", selected)):
+            graph = self._schema_graph_for_tables(tables)
+            size = len(graph.to_prompt_context())
+
+            if size <= budget:
+                emit(
+                    Codes.REVIEW_SCHEMA_BOUNDED,
+                    f"全量 Schema 超出长度预算，复核改用{label}",
+                    全量=f"{full_size} 字",
+                    预算=f"{budget} 字",
+                    实际=f"{len(tables)} 表 {size} 字",
+                )
+                return graph
+
+        emit(
+            Codes.REVIEW_SCHEMA_BOUNDED,
+            "全量 Schema 和选中表的全部字段都超出长度预算，不复核",
+            全量=f"{full_size} 字",
+            预算=f"{budget} 字",
+        )
+        return None
+
+    def _full_schema_size(self) -> int:
+        """全量 Schema 的提示词长度。库不变就不变，算一次留着。"""
+        if getattr(self, "_full_schema_size_cache", None) is None:
+            self._full_schema_size_cache = len(self._build_full_schema_graph().to_prompt_context())
+        return self._full_schema_size_cache
+
+    def _schema_graph_for_tables(self, tables):
+        """只含这些表、表里全部字段、这些表之间关系的 SchemaGraph。"""
+        from collections import defaultdict
+
+        from schema_retrieval.objects import SchemaGraph
+
+        service = self.schema_retrieval_service
+        columns_by_table = defaultdict(list)
+        for column in service.columns:
+            if column.table_name in tables:
+                columns_by_table[column.table_name].append(column)
+
+        database = next(iter(service.tables.values())).database if service.tables else ""
+        return SchemaGraph(
+            database=database,
+            tables={name: table for name, table in service.tables.items() if name in tables},
+            columns=dict(columns_by_table),
+            relations=[
+                relation for relation in service.relations
+                if relation.source_table in tables and relation.target_table in tables
+            ],
         )
 
     def _build_full_schema_graph(self):
