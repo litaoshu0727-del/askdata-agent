@@ -106,7 +106,7 @@ HOLDOUT3_BANKS = {
 }
 
 # 第四套：验证第三套之后的四处改动——时间字段只留保底、整数除法规则、筛选值守卫
-# 跳过题目自带口径的取值、候选池按关键词保底。冻结后才第一次运行。
+# 跳过题目自带口径的取值、候选池按关键词保底。0518ab7 冻结后第一次运行——现在也用过了。
 try:
     from eval.cases_holdout4 import (  # noqa: E402
         HOLDOUT4_CHINOOK_CASES,
@@ -1150,7 +1150,7 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank in {"holdout", "holdout2", "holdout3"}:
+    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4"}:
         # 提醒：这几套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
         print(f"⚠️ {args.bank} 已经用过（见 docs/实验记录.md）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
