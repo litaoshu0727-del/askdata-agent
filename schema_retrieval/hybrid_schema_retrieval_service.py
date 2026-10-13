@@ -141,6 +141,19 @@ class HybridSchemaRetrievalConfig:
     max_dominant_per_query: int = 4
     """单次查询最多保送几个字段，防止保送集喧宾夺主。"""
 
+    time_field_close_ratio: float = 0.5
+    """
+    时间保底补几个：精排分不低于第一名这个比例的候选都补上（最多 time_field_max_added 个）。
+
+    只补第一名时，1076 个字段的压测库上 E06「2024年5月15日一共有多少笔订单」，第一名是已经在
+    结果里的 last_order_time（最近一次下单时间，0.495），保底就停了；真正要的 create_time
+    排第二（0.268，第一名的 0.54）。精排拿不准的时候，把接近的几个都给出来让模型按题意选，
+    和"一样短的连接路径都补上"同一个道理。
+    """
+
+    time_field_max_added: int = 2
+    """时间保底一次最多补几个字段。"""
+
     time_field_guard: bool = True
     """
     时间约束保底：问题里有明确的时间约束（某年、某月、某日、季度、上下旬……）时，
@@ -695,38 +708,49 @@ class HybridSchemaRetrievalService:
             or time_docs
         )
 
-        best = self.rerank_client.rerank(
+        ranked = self.rerank_client.rerank(
             query=query,
             documents=[
                 RerankDocument(doc_index=index, text=self.documents[index].rerank_text)
                 for index in eligible
             ],
-            top_n=1,
+            top_n=self.config.time_field_max_added + 1,
         )
 
-        if not best:
+        if not ranked:
             return schema_hits
 
-        document = self.documents[best[0].doc_index]
-        key = (document.column.table_name, document.column.column_name)
+        # 第一名，加上分数和它接近的几个：精排拿不准时都给出来
+        floor = ranked[0].rerank_score * self.config.time_field_close_ratio
+        close = [ranked[0]] + [item for item in ranked[1:] if item.rerank_score >= floor]
 
-        if any((hit.column.table_name, hit.column.column_name) == key for hit in schema_hits):
-            return schema_hits
+        existing = {(hit.column.table_name, hit.column.column_name) for hit in schema_hits}
+        added = []
 
-        schema_hits.append(
-            SchemaHit(
-                doc_id=document.doc_id,
-                score=0.0,
-                column=document.column,
+        for item in close:
+            document = self.documents[item.doc_index]
+            key = (document.column.table_name, document.column.column_name)
+
+            if key in existing or len(added) >= self.config.time_field_max_added:
+                continue
+
+            schema_hits.append(
+                SchemaHit(
+                    doc_id=document.doc_id,
+                    score=0.0,
+                    column=document.column,
+                )
             )
-        )
+            existing.add(key)
+            added.append(f"{key[0]}.{key[1]}")
 
-        emit(
-            Codes.TIME_FIELD_RESCUED,
-            "问题里有时间约束，检索结果里却没有最贴题的时间字段，已补回",
-            字段=f"{key[0]}.{key[1]}",
-            候选数=len(eligible),
-        )
+        if added:
+            emit(
+                Codes.TIME_FIELD_RESCUED,
+                "问题里有时间约束，检索结果里却没有最贴题的时间字段，已补回",
+                字段="、".join(added),
+                候选数=len(eligible),
+            )
 
         return schema_hits
 

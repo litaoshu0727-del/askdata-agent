@@ -131,13 +131,32 @@ class TimeCoverageLoaderTestCase(unittest.TestCase):
 
 
 class InOrderRerankClient:
-    """按传入顺序打分的精排桩：排在最前的就是第一名，结果完全由调用方决定。"""
+    """
+    按传入顺序打分的精排桩：排在最前的就是第一名，结果完全由调用方决定。
+
+    分数拉开（1、1/4、1/9……）：第二名远低于第一名的一半，保底只补一个。
+    "分数接近时补几个"另有 CloseScoresRerankClient 来测。
+    """
 
     def rerank(self, query, documents, top_n):
         return [
-            RerankResult(doc_index=document.doc_index, rerank_score=1.0 - rank / 100, text=document.text)
+            RerankResult(doc_index=document.doc_index, rerank_score=1.0 / (rank + 1) ** 2, text=document.text)
             for rank, document in enumerate(documents)
         ][:top_n]
+
+
+class CloseScoresRerankClient:
+    """按给定的分数表打分，没列出的字段 0 分。"""
+
+    def __init__(self, scores):
+        self.scores = scores
+
+    def rerank(self, query, documents, top_n):
+        results = [
+            RerankResult(doc_index=d.doc_index, rerank_score=self.scores.get(d.text.split("\n")[0], 0.0), text=d.text)
+            for d in documents
+        ]
+        return sorted(results, key=lambda r: r.rerank_score, reverse=True)[:top_n]
 
 
 class TimeFieldGuardTestCase(unittest.TestCase):
@@ -252,6 +271,40 @@ INSERT INTO audit_log VALUES (2, '2024-09-01 00:00:00');
         self.assertEqual(rescued([hit("invoice", "total")]), [("invoice.invoice_date", 1)])
         # 选中的只有员工表，员工表里没有覆盖 2024 年的时间字段：退回全库
         self.assertEqual(rescued([hit("employee", "name")]), [("audit_log.create_time", 2)])
+
+    def test_close_runner_up_is_added_when_the_best_is_already_present(self):
+        """
+        E06：第一名 last_order_time 已经在结果里，真正要的 create_time 排第二（第一名的 0.54）。
+        只补第一名时保底就停了；现在分数不低于第一名一半的都补上，远低的不补。
+        """
+        service = self.service
+        texts = {i: d.rerank_text.split("\n")[0] for i, d in enumerate(service.documents)}
+        by_column = {f"{d.column.table_name}.{d.column.column_name}": texts[i] for i, d in enumerate(service.documents)}
+        service.rerank_client = CloseScoresRerankClient({
+            by_column["invoice.invoice_date"]: 0.495,
+            by_column["employee.hire_date"]: 0.268,
+            by_column["employee.birth_date"]: 0.10,
+        })
+        names, rescued = self.guard(
+            # 1960、2002、2024 年：出生日期、入职日期、发票日期都覆盖，三个都是候选，只靠分数区分
+            "1960年、2002年、2024年入职或开票的情况",
+            [self.hit("invoice", "total"), self.hit("invoice", "invoice_date"), self.hit("employee", "name")],
+        )
+        self.assertIn("employee.hire_date", names)
+        self.assertNotIn("employee.birth_date", names)
+        self.assertEqual(rescued[0].context["字段"], "employee.hire_date")
+        self.assertEqual(rescued[0].context["候选数"], 3)
+
+    def test_at_most_two_time_fields_are_added(self):
+        """三个候选分数都接近、都不在结果里：最多补两个，不把时间字段全塞进去。"""
+        texts = {f"{d.column.table_name}.{d.column.column_name}": d.rerank_text.split("\n")[0] for d in self.service.documents}
+        self.service.rerank_client = CloseScoresRerankClient({
+            texts["invoice.invoice_date"]: 0.50,
+            texts["employee.hire_date"]: 0.45,
+            texts["employee.birth_date"]: 0.40,
+        })
+        _, rescued = self.guard("1960年、2002年、2024年入职或开票的情况", [self.hit("invoice", "total"), self.hit("employee", "name")])
+        self.assertEqual(rescued[0].context["字段"], "invoice.invoice_date、employee.hire_date")
 
     def test_coverage_stays_out_of_index_texts_and_prompt(self):
         """
