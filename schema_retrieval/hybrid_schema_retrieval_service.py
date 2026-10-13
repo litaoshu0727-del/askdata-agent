@@ -682,7 +682,18 @@ class HybridSchemaRetrievalService:
 
         # 问 2024 年，就只在数据覆盖 2024 年的时间字段里挑；一个都不覆盖时（问的年份没有数据），
         # 照样补一个时间字段，让模型写得出筛选、查出"没有数据"，而不是丢掉条件。
-        eligible = [index for index in time_docs if covers(index)] or time_docs
+        #
+        # 先在已经选中的表里挑：时间约束限定的是问题所说的那些实体。全库挑在小库上没问题，
+        # 大库上每张业务表都带"创建时间""更新时间"，数据也覆盖 2024 年——1076 个字段的压测库里，
+        # E06「2024年5月15日一共有多少笔订单」从一百多个候选里挑中了一张干扰表的时间字段。
+        # 选中的表里一个覆盖的都没有，才退回全库。
+        selected = {hit.column.table_name for hit in schema_hits}
+        covering = [index for index in time_docs if covers(index)]
+        eligible = (
+            [index for index in covering if self.documents[index].column.table_name in selected]
+            or covering
+            or time_docs
+        )
 
         best = self.rerank_client.rerank(
             query=query,

@@ -220,6 +220,39 @@ class TimeFieldGuardTestCase(unittest.TestCase):
         self.assertEqual(names, ["invoice.total", "invoice.invoice_date"])
         self.assertEqual(rescued, [])
 
+    def test_prefers_time_fields_in_already_selected_tables(self):
+        """
+        大库上每张表都带"创建时间"，数据也覆盖 2024 年。时间约束限定的是问题所说的实体，
+        先在已选中的表里挑：这里精排桩会把排在最前的 audit_log.create_time 选成第一名，
+        限定之后才轮到发票日期。选中的表里一个覆盖的都没有，才退回全库。
+        """
+        with silenced():
+            service = HybridSchemaRetrievalService.from_sqlite(
+                db_path=make_db(SALES_DB + """
+CREATE TABLE audit_log (log_id INTEGER PRIMARY KEY, create_time DATETIME);
+INSERT INTO audit_log VALUES (1, '2024-03-01 00:00:00');
+INSERT INTO audit_log VALUES (2, '2024-09-01 00:00:00');
+"""),
+                database_name="db",
+                business_meta={},
+                embedding_client=LocalHashEmbeddingClient(dimensions=32),
+                rerank_client=InOrderRerankClient(),
+                config=HybridSchemaRetrievalConfig(),
+            )
+
+        def hit(table, column):
+            document = next(d for d in service.documents if (d.column.table_name, d.column.column_name) == (table, column))
+            return SchemaHit(doc_id=document.doc_id, score=1.0, column=document.column)
+
+        def rescued(hits):
+            with silenced(), collect() as diagnostics:
+                service._add_time_field_hits(query="2024年一共开了多少张发票", schema_hits=list(hits))
+            return [(d.context["字段"], d.context["候选数"]) for d in diagnostics if d.code == Codes.TIME_FIELD_RESCUED]
+
+        self.assertEqual(rescued([hit("invoice", "total")]), [("invoice.invoice_date", 1)])
+        # 选中的只有员工表，员工表里没有覆盖 2024 年的时间字段：退回全库
+        self.assertEqual(rescued([hit("employee", "name")]), [("audit_log.create_time", 2)])
+
     def test_coverage_stays_out_of_index_texts_and_prompt(self):
         """
         覆盖年份只给保底用。它最初写在 value_range 里，第三套盲写题上 30 道 ecommerce 题的
