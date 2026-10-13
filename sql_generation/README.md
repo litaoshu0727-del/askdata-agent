@@ -22,10 +22,11 @@ python -m sql_generation.sql_generation_demo
 
 **提示词里的 SQLite 规则**是从具体失败里来的，每条的出处写在 `SqlPromptBuilder` 的文档字符串里：
 日期区间不要写成字符串 `BETWEEN`、日期字面量用 `YYYY-MM-DD`、整数相除先乘 1.0、跨表比例
-各自用子查询。生成和修正两份提示词都要有，改的时候两处一起改，
-[tests/test_sql_prompt.py](../tests/test_sql_prompt.py) 会检查。见
+各自用子查询、一对多连接之后不直接数主表的笔数或加主表的金额。生成和修正两份提示词都要有，
+改的时候两处一起改，[tests/test_sql_prompt.py](../tests/test_sql_prompt.py) 会检查。见
 [SQL 生成看不到样例值](../docs/实验记录.md#sql-生成看不到样例值)、
-[整数相除，和跨表比例](../docs/实验记录.md#整数相除和跨表比例)。
+[整数相除，和跨表比例](../docs/实验记录.md#整数相除和跨表比例)、
+[一对多连接](../docs/实验记录.md#一对多连接订单被数了几遍)。
 
 执行请求格式（交给 [mcp_router](../mcp_router/README.md)）：
 

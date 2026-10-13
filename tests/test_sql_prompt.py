@@ -64,6 +64,17 @@ class SqlPromptRulesTestCase(unittest.TestCase):
             with self.subTest(提示词=name):
                 self.assertIn("各自用子查询算好再相除", prompt)
 
+    def test_one_to_many_rule_in_both_prompts(self):
+        """
+        H4E27：明细件数合计不少于 6 件的订单按状态数笔数，SQL 把两层 GROUP BY 压成一层，
+        或者连上明细表之后再 COUNT。探针上还有 COUNT(DISTINCT) 去了重、SUM 没去重的。
+        """
+        for name, prompt in self.prompts.items():
+            with self.subTest(提示词=name):
+                self.assertIn("一对多连接", prompt)
+                self.assertIn("不要把两层 GROUP BY 压成一层", prompt)
+                self.assertIn("COUNT(DISTINCT) 只救得了笔数，救不了 SUM", prompt)
+
     def test_date_rule_in_both_prompts(self):
         """E44：带时分秒的字段写成 BETWEEN '起始日' AND '结束日'，结束日当天的记录全漏。"""
         for name, prompt in self.prompts.items():
