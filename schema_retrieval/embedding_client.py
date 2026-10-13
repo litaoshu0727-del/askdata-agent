@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
-import urllib.request
 from dataclasses import dataclass
 from typing import List
 
 import numpy as np
+from llm_http import post_json
 
 
 @dataclass
@@ -88,25 +87,8 @@ class AliyunEmbeddingClient:
             "encoding_format": "float",
         }
 
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}",
-        }
-
-        request = urllib.request.Request(
-            self.config.embedding_url,
-            data=data,
-            headers=headers,
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
-                body = response.read().decode("utf-8")
-                result = json.loads(body)
-
+            result = post_json(self.config.embedding_url, payload, self.config.api_key, self.config.timeout, label="阿里云 Embedding")
         except Exception as exc:
             raise RuntimeError(f"调用阿里云 Embedding API 失败: {exc}") from exc
 

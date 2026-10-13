@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator
 
 from askdata_diagnostics import Codes, OnceEmitter
 from llm_config import resolve_chat_provider
+from llm_http import open_stream, post_json
 
 
 @dataclass
@@ -154,23 +154,9 @@ class ThinkingModelClient:
 
         payload.update(self.config.extra_payload)
 
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Accept": "text/event-stream",
-        }
-
-        request = urllib.request.Request(
-            self.config.base_url,
-            data=data,
-            headers=headers,
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
+            with open_stream(self.config.base_url, payload, self.config.api_key, self.config.timeout,
+                             label="思考模型") as response:
                 for raw_line in response:
                     line = raw_line.decode("utf-8").strip()
 
@@ -203,24 +189,8 @@ class ThinkingModelClient:
         """
         发送 JSON 请求。
         """
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}",
-        }
-
-        request = urllib.request.Request(
-            self.config.base_url,
-            data=data,
-            headers=headers,
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
-                body = response.read().decode("utf-8")
-                return json.loads(body)
+            return post_json(self.config.base_url, payload, self.config.api_key, self.config.timeout, label="思考模型")
         except Exception as exc:
             raise RuntimeError(f"调用思考模型失败: {exc}") from exc
 

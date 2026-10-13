@@ -92,6 +92,9 @@ class Codes:
     时间是约束不是主题，长问题里时间字段常被排到垫底。
     """
 
+    MODEL_CALL_RETRIED = "MODEL_CALL_RETRIED"
+    """模型接口返回 429 / 5xx 或连接超时、被断开，已退避重试。频繁出现说明并发太高或服务不稳。"""
+
     REVIEW_SCHEMA_BOUNDED = "REVIEW_SCHEMA_BOUNDED"
     """
     全量 Schema 超出长度预算，拒答复核 / 筛选值守卫重规划改用有限扩展（选中表的全部字段，

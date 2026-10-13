@@ -144,6 +144,7 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 | Code | 含义 |
 |---|---|
 | `MODEL_MOCK_FALLBACK` / `EMBEDDING_MOCK_FALLBACK` / `RERANK_MOCK_FALLBACK` | 没配 Key 或本地模型，对应环节走了 Mock |
+| `MODEL_CALL_RETRIED` | 模型接口返回 429 / 5xx 或超时，已退避重试（[llm_http.py](llm_http.py)）；402、401 这类不重试 |
 | `SCHEMA_RECALL_CAPPED` | 精排名额相对候选数过小，可能截掉了需要的字段 |
 | `SCHEMA_RECALL_MISS` | 首轮检索漏召回，已用全量 Schema 复核救回 |
 | `FILTER_VALUE_DROPPED` | 问题提到的枚举取值没出现在 SQL 里，筛选条件疑似被丢 |

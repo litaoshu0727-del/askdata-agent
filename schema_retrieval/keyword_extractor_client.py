@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from llm_config import resolve_chat_provider
+from llm_http import post_json
 
 
 @dataclass
@@ -141,24 +140,8 @@ class AliyunKeywordExtractor:
 
         payload.update(self.config.extra_payload)
 
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}",
-        }
-
-        request = urllib.request.Request(
-            self.config.chat_url,
-            data=data,
-            headers=headers,
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
-                body = response.read().decode("utf-8")
-                result = json.loads(body)
+            result = post_json(self.config.chat_url, payload, self.config.api_key, self.config.timeout, label="关键词抽取模型")
         except Exception as exc:
             raise RuntimeError(f"调用关键词抽取模型失败: {exc}") from exc
 
