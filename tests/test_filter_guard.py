@@ -132,6 +132,33 @@ class FilterValueGuardTest(unittest.TestCase):
         )
         self.assertEqual([item.value for item in dropped], ["已支付"])
 
+    def test_value_inside_a_longer_field_alias_is_not_checked(self):
+        """
+        大库上的误报：干扰域的"浏览"如果嵌在字段别名"浏览次数"里，问题说的是那个字段，
+        不是按"浏览"筛选。别名必须严格更长、并且正好盖住这一处取值。
+        """
+        guard = FilterValueGuard(self.guard.value_columns, shadow_terms=["浏览次数", "已完成"])
+        self.assertEqual(guard.checked_values("各商品的浏览次数是多少"), [])
+        # "浏览行为"不是别名：照样查（E19）
+        self.assertEqual(guard.checked_values("用户浏览行为的平均停留时长"), ["浏览"])
+        # 别名和取值一样长（"已完成"）不算遮蔽：照样查（E52 的"直播间"同理）
+        self.assertEqual(guard.checked_values("已完成订单一共多少钱"), ["已完成"])
+
+    def test_shadow_only_covers_the_occurrences_inside_the_alias(self):
+        """同一个取值出现两次，一次在别名里、一次单独出现：单独那次照样要查。"""
+        guard = FilterValueGuard(self.guard.value_columns, shadow_terms=["浏览次数"])
+        self.assertEqual(guard.checked_values("浏览次数最多的用户，他的浏览行为平均停留多久"), ["浏览"])
+
+    def test_scope_limits_values_to_related_tables(self):
+        """所属表不在本次检索的表（加外键一跳）里的取值不查；在的照样查，并只报范围内的字段。"""
+        sql = ["SELECT COUNT(*) FROM fact_order"]
+        self.assertEqual(self.guard.find_dropped("上海一共有多少订单", sql, scope_tables={"fact_order"}), [])
+        dropped = self.guard.find_dropped("上海一共有多少订单", sql, scope_tables={"fact_order", "dim_user"})
+        self.assertEqual([(d.value, d.columns) for d in dropped], [("上海", ["dim_user.city"])])
+        # 不传范围：和原来一样，所有字段都报
+        self.assertEqual(self.guard.find_dropped("上海一共有多少订单", sql)[0].columns,
+                         ["dim_shop.city", "dim_user.city"])
+
     def test_value_shared_by_two_columns_lists_both(self):
         dropped = self.guard.find_dropped(
             "上海一共有多少订单",

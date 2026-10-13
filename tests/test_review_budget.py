@@ -109,7 +109,7 @@ class _DropOnce:
     def __init__(self):
         self.calls = 0
 
-    def find_dropped(self, query, sqls):
+    def find_dropped(self, query, sqls, scope_tables=None):
         self.calls += 1
         return [DroppedFilter(value="已支付", columns=["fact_order.order_status"])] if self.calls == 1 else []
 
@@ -190,6 +190,38 @@ class BudgetAtCallSitesTest(unittest.TestCase):
             self.pipeline.run("查询总交易笔数大于50000的利率是多少")
 
         self.assertIn({"fact_order"}, seen)
+
+
+class GuardWiringTest(unittest.TestCase):
+    """链路要把检索的表（加外键一跳）和元数据里的别名交给筛选值守卫。"""
+
+    def test_scope_is_the_graph_tables_plus_one_hop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with silenced():
+                pipeline = AskDataText2SQLPipeline(PipelineConfig(db_path=Path(tmp) / "trade.db"))
+            seen = []
+
+            class Spy:
+                def find_dropped(self, query, sqls, scope_tables=None):
+                    seen.append(scope_tables)
+                    return []
+
+            pipeline.filter_guard = Spy()
+            with silenced():
+                result = pipeline.run("查询总交易笔数大于50000的利率是多少")
+
+        self.assertEqual(len(seen), 1)
+        self.assertIsNotNone(seen[0])
+        self.assertTrue({"trade_summary", "interest_info"} <= seen[0])
+
+    def test_guard_gets_the_metadata_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with silenced():
+                pipeline = AskDataText2SQLPipeline(PipelineConfig(
+                    dataset="ecommerce", database_name="ecommerce_db", db_path=Path(tmp) / "e.db",
+                ))
+        # "销售额"是 gmv 的别名：嵌在里面的取值不再当成筛选
+        self.assertIn("销售额", pipeline.filter_guard.shadow_terms)
 
 if __name__ == "__main__":
     unittest.main()

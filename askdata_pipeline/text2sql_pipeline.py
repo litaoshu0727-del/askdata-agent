@@ -28,6 +28,7 @@ from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
 )
+from .bigdb_data import create_ecommerce_big_database, get_ecommerce_big_business_meta
 from .ecommerce_data import (
     create_ecommerce_demo_database,
     get_ecommerce_business_meta,
@@ -362,7 +363,7 @@ class AskDataText2SQLPipeline:
         # 不觉得缺什么——E19 直接去掉了 behavior_type='浏览'，E51 拿
         # finish_time IS NOT NULL 凑"已完成"，降级记录都是空的。
         # 这里拿数据库的取值当裁判，不依赖 CoT 自觉。
-        dropped = self._find_dropped_filters(guard_query, step_logs)
+        dropped = self._find_dropped_filters(guard_query, step_logs, schema_graph)
 
         guard_graph = None
         if dropped and not guard_retry:
@@ -406,14 +407,28 @@ class AskDataText2SQLPipeline:
 
         return cot_result, step_logs, schema_graph
 
-    def _find_dropped_filters(self, guard_query: str, step_logs) -> list:
-        """跑通了 SQL 才查；CoT 判缺失、没生成 SQL 的情况不归这里管。"""
+    def _find_dropped_filters(self, guard_query: str, step_logs, schema_graph=None) -> list:
+        """
+        跑通了 SQL 才查；CoT 判缺失、没生成 SQL 的情况不归这里管。
+
+        只查和这次检索相关的表（选中的表加外键一跳）里的取值，见 FilterValueGuard.find_dropped。
+        """
         if self.filter_guard is None or not guard_query or not step_logs:
             return []
+
+        scope = None
+        if schema_graph is not None:
+            scope = set(schema_graph.tables)
+            for relation in self.schema_retrieval_service.relations:
+                if relation.source_table in schema_graph.tables:
+                    scope.add(relation.target_table)
+                if relation.target_table in schema_graph.tables:
+                    scope.add(relation.source_table)
 
         return self.filter_guard.find_dropped(
             guard_query,
             [log.sql for log in step_logs],
+            scope_tables=scope,
         )
 
     @staticmethod
@@ -490,6 +505,15 @@ class AskDataText2SQLPipeline:
 
         return attempts[0]
 
+    def _alias_terms(self) -> List[str]:
+        """业务元数据里所有表和字段的别名，给筛选值守卫判断"取值是不是嵌在字段别名里"。"""
+        terms = []
+        for table_meta in (self.business_meta or {}).values():
+            terms.extend(table_meta.get("aliases", []))
+            for column_meta in table_meta.get("columns", {}).values():
+                terms.extend(column_meta.get("aliases", []))
+        return terms
+
     def _build_filter_guard(self) -> Optional[FilterValueGuard]:
         """
         建筛选值守卫的取值索引。
@@ -498,7 +522,7 @@ class AskDataText2SQLPipeline:
         只是回到"检索漏了筛选字段就零告警"的老样子。所以失败时留下记录、返回 None。
         """
         try:
-            return FilterValueGuard.from_sqlite(self.db_path)
+            return FilterValueGuard.from_sqlite(self.db_path, shadow_terms=self._alias_terms())
         except Exception as exc:
             emit(
                 Codes.FILTER_GUARD_DISABLED,
@@ -742,6 +766,13 @@ class AskDataText2SQLPipeline:
                 get_trade_business_meta(),
             )
 
+        if dataset == "ecommerce_big":
+            # 电商库 + 12 个干扰域，1076 个字段：测检索和复核在大库上还行不行。
+            return (
+                create_ecommerce_big_database(self.config.db_path),
+                get_ecommerce_big_business_meta(),
+            )
+
         if dataset == "chinook":
             # 一个我没有设计的 Schema，用来测"换个陌生库还行不行"。
             return (
@@ -750,7 +781,7 @@ class AskDataText2SQLPipeline:
             )
 
         raise ValueError(
-            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce / chinook。"
+            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce / ecommerce_big / chinook。"
         )
 
     def _build_keyword_extractor(self):

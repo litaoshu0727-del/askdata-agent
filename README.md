@@ -24,6 +24,10 @@ Text2SQL 链路。
 盲写，在第一次运行之前冻结提交（[协议](docs/实验记录.md#协议)）。留出集四是当前版本的成绩：
 第三套之后的四处改动里，整数除法规则在陌生题上测出了收益，其余三处没有可帮的题、也没测出代价。
 
+**[大库压力测试](docs/实验记录.md#大库压力测试1076-个字段)**：电商 11 张表加 12 个干扰业务域，88 张表 1076 个字段，
+全量 Schema 14.8 万字。121 道电商题（主题库加留出集三、四）端到端 120/121，与小库持平，平均耗时
+11.9s 对 11.2s。
+
 ## 主要结论
 
 1. **拒答要建立在完整信息上。**模型常把"我没看到这个字段"说成"库里没有"。拒答前用全量
@@ -99,6 +103,9 @@ python -m askdata_web.server                    # http://127.0.0.1:8000
 - **ecommerce**：自建，11 表 81 字段，约 7000 行，固定随机种子。刻意埋了近义字段：9 个
   金额字段、两张表里都有的 `pay_amount` / `city` / `finish_time`、"客单价""销售额"这类
   和字段名字面零重合的业务词
+- **ecommerce_big**：压力测试用。电商 11 张表一字不改，再加人力、财务、采购、生产等 12 个相邻
+  业务域的干扰表，88 张表 1076 个字段；干扰域避开陷阱题的主题，和电商之间没有外键，元数据薄。
+  电商的题在这个库上答案不变（[bigdb_data.py](askdata_pipeline/bigdb_data.py)）
 - **Chinook**：公开的音乐商店库，11 表 64 字段，英文命名、中文提问。`Name` 出现在 5 张表，
   客户和员工共享 11 个同名字段——这些歧义不是我埋的
 
@@ -117,6 +124,7 @@ curl -L -o runtime_data/chinook.db \
 ```bash
 python -m eval.runner --repeat 3                                # ecommerce 主题库
 python -m eval.runner --dataset chinook --repeat 3
+python -m eval.runner --dataset ecommerce_big                   # 1076 个字段的压测库
 python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
@@ -157,10 +165,9 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 
 ## 局限与待办
 
-- **只在 SQLite、最多 81 个字段的库上测过。**拒答复核和筛选值守卫重规划会把全量 Schema
-  摆出来（约 200 字一个字段）；超出 `review_schema_char_budget`（默认 4 万字）时改用有限扩展——
-  选中表的全部字段，能放下时再加外键一跳，都放不下就不复核。库越大复核越不完整，这条退路
-  还没在真实的大库上测过
+- **大库只测过合成的。**1076 个字段的压测库上端到端与小库持平，复核的有限扩展也接住了漏召回
+  （H3E27），但干扰域的元数据薄、和电商之间没有同名实体的真歧义，只问电商的题；E06 是模型猜出了
+  没给它的 `stat_date` 才答对的。真实数仓上还没测过，也只在 SQLite 上测过
 - **三处改动在陌生题上还没有可帮的题**：时间字段只留保底、筛选值守卫跳过题目自带口径的取值、
   候选池按关键词保底。第四套里没有题落在它们针对的失败形态上，收益未测出，代价也未测出
 - **判分的局限**：每行的值先排序再比，把员工和上级的名字对调也会判对

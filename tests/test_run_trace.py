@@ -43,7 +43,7 @@ class _DropOnce:
     def __init__(self):
         self.calls = 0
 
-    def find_dropped(self, query, sqls):
+    def find_dropped(self, query, sqls, scope_tables=None):
         self.calls += 1
         return [DroppedFilter(value="已支付", columns=["fact_order.order_status"])] if self.calls == 1 else []
 

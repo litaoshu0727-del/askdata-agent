@@ -51,7 +51,12 @@ ALL_CASES: List[EvalCase] = CASES + EXTRA_CASES
 DATASETS = {
     "ecommerce": (ALL_CASES, "ecommerce_db", Path("runtime_data") / "eval_ecommerce.db"),
     "chinook": (CHINOOK_CASES, "chinook_db", Path("runtime_data") / "chinook.db"),
+    # 电商库 + 12 个干扰域（1076 个字段）。电商 11 张表逐行一致，电商的题答案不变。
+    "ecommerce_big": (ALL_CASES, "ecommerce_big_db", Path("runtime_data") / "eval_ecommerce_big.db"),
 }
+
+# 留出集按数据集名分；大库沿用电商的题
+BANK_DATASET = {"ecommerce_big": "ecommerce"}
 
 # 留出集：由没见过系统失败情况的出题人编写。
 #
@@ -1145,7 +1150,7 @@ def main() -> None:
     case_pool, database_name, default_db = DATASETS[args.dataset]
 
     if args.bank != "main":
-        case_pool = BANKS[args.bank][args.dataset]
+        case_pool = BANKS[args.bank].get(BANK_DATASET.get(args.dataset, args.dataset)) or []
         if not case_pool:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return

@@ -37,7 +37,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 TEXT_TYPE_MARKERS = ("CHAR", "TEXT", "CLOB")
 
@@ -67,8 +67,12 @@ class FilterValueGuard:
     （商品名、用户名、时间戳）一来太大，二来问题里提到它们多半是在问而不是在筛。
     """
 
-    def __init__(self, value_columns: Dict[str, Set[str]]):
+    def __init__(self, value_columns: Dict[str, Set[str]], shadow_terms: Iterable[str] = ()):
         self.value_columns = value_columns
+
+        # 字段的业务别名（"销售额""转化率""一级类目"）。取值嵌在这样一个更长的别名里时，
+        # 问题说的是那个字段，不是在按这个取值筛选，见 _shadowed。
+        self.shadow_terms = sorted({term for term in shadow_terms if term}, key=len, reverse=True)
 
         # 长的先匹配："数码电器"命中了就不再拿"数码"去算一次
         self._ordered_values = sorted(value_columns, key=len, reverse=True)
@@ -79,6 +83,7 @@ class FilterValueGuard:
         db_path: str | Path,
         max_distinct: int = 50,
         min_length: int = 2,
+        shadow_terms: Iterable[str] = (),
     ) -> "FilterValueGuard":
         """
         扫一遍库，建取值索引。
@@ -129,7 +134,7 @@ class FilterValueGuard:
         finally:
             conn.close()
 
-        return cls(value_columns)
+        return cls(value_columns, shadow_terms=shadow_terms)
 
     def mentioned_values(self, query: str) -> List[str]:
         """
@@ -173,26 +178,61 @@ class FilterValueGuard:
             if any(_OWN_DEFINITION.match(query, end) for _, end in spans):
                 continue
 
+            if all(self._shadowed(query, value, start, end) for start, end in spans):
+                continue
+
             checked.append(value)
 
         return checked
 
-    def find_dropped(self, query: str, sqls: Iterable[str]) -> List[DroppedFilter]:
+    def _shadowed(self, query: str, value: str, start: int, end: int) -> bool:
+        """
+        这一处取值是不是嵌在一个更长的字段别名里。
+
+        1076 个字段的压测库上，守卫在 121 次运行里报了 42 次，全是误报：干扰域的枚举值
+        "销售"（岗位）、"转化"（投放目标）、"一级"（部门层级）嵌在"销售额""转化率"
+        "一级类目"里——这些是字段的别名，问题说的是字段，不是按取值筛选。
+        别名必须严格比取值长：E52「直播间下单」里"直播间"既是取值又是别名，照样要查；
+        E19「用户浏览行为」里"浏览行为"不是任何字段的别名，"浏览"照样要查。
+        """
+        for term in self.shadow_terms:
+            if len(term) <= len(value) or value not in term:
+                continue
+            for match in re.finditer(re.escape(term), query):
+                if match.start() <= start and end <= match.end():
+                    return True
+        return False
+
+    def find_dropped(
+        self,
+        query: str,
+        sqls: Iterable[str],
+        scope_tables: Optional[Iterable[str]] = None,
+    ) -> List[DroppedFilter]:
         """
         问题提到了、SQL 却没用上的取值。
 
         "没用上"的判据刻意放得很宽：SQL 里出现了这个取值，**或者**出现了它所属
         字段的字段名，都算用上了。后者是为了容忍换一种写法的筛选——比如
         order_status IN (...) 或 order_status <> '待支付'。只抓整个条件都不见了的情况。
+
+        scope_tables：只看所属表在这些表里的取值。链路传的是这次检索选中的表加外键一跳——
+        E19 的行为表、E51 的订单表都选中了；"北京用户"漏了用户表时，用户表也是订单表的
+        一跳邻居。和问题无关的业务域的取值（"通过"是面试结果、"小时"是更新频率）就不查了。
         """
         sql_text = "\n".join(sqls)
         dropped: List[DroppedFilter] = []
+        scope = set(scope_tables) if scope_tables is not None else None
 
         for value in self.checked_values(query):
             if value in sql_text:
                 continue
 
             columns = sorted(self.value_columns[value])
+            if scope is not None:
+                columns = [column for column in columns if column.split(".", 1)[0] in scope]
+                if not columns:
+                    continue
             column_names = {column.split(".", 1)[1] for column in columns}
 
             if any(re.search(rf"\b{re.escape(name)}\b", sql_text) for name in column_names):
