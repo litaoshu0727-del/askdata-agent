@@ -125,6 +125,21 @@ HOLDOUT4_BANKS = {
     "chinook": HOLDOUT4_CHINOOK_CASES,
 }
 
+# 第五套：验证第四套之后的改动——桥接表、复核长度预算、模型调用重试、时间保底两处、
+# 筛选值守卫只查相关表和别名遮蔽、一对多连接规则、结果行数上限。冻结后还没运行过。
+try:
+    from eval.cases_holdout5 import (  # noqa: E402
+        HOLDOUT5_CHINOOK_CASES,
+        HOLDOUT5_ECOMMERCE_CASES,
+    )
+except ImportError:
+    HOLDOUT5_ECOMMERCE_CASES, HOLDOUT5_CHINOOK_CASES = [], []
+
+HOLDOUT5_BANKS = {
+    "ecommerce": HOLDOUT5_ECOMMERCE_CASES,
+    "chinook": HOLDOUT5_CHINOOK_CASES,
+}
+
 # 探针：对着一类已知的生成错误写的小题（整数相除、一对多连接），量规则、改规则时回归。
 # 不是留出集，分数不能当泛化证据。见 eval/cases_probes.py。
 from eval.cases_probes import PROBE_BANKS  # noqa: E402
@@ -134,6 +149,7 @@ BANKS = {
     "holdout2": HOLDOUT2_BANKS,
     "holdout3": HOLDOUT3_BANKS,
     "holdout4": HOLDOUT4_BANKS,
+    "holdout5": HOLDOUT5_BANKS,
     "probes": PROBE_BANKS,
 }
 
@@ -1126,11 +1142,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "probes"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "probes"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
             "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）；"
             "holdout4 是第四套盲写留出集（ecommerce + Chinook）；"
+            "holdout5 是第五套盲写留出集（ecommerce + Chinook，冻结后未运行）；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1185,7 +1202,7 @@ def main() -> None:
 
     print("=" * 92)
     bank_label = {
-        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四",
+        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四", "holdout5": "　·　留出集五",
         "probes": "　·　探针",
     }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")

@@ -1,0 +1,26 @@
+{
+  "H5E03": [
+    "SELECT CAST(strftime('%w', stat_date) AS INTEGER) AS weekday, SUM(order_count) AS cnt FROM dws_shop_daily GROUP BY weekday"
+  ],
+  "H5E06": [
+    "SELECT channel, ROUND(SUM(pay_amount), 2) AS pay_sum FROM fact_order WHERE date(create_time) BETWEEN '2024-05-20' AND '2024-05-26' AND pay_time IS NOT NULL GROUP BY channel"
+  ],
+  "H5E11": [
+    "SELECT u.register_channel, COUNT(*) AS user_cnt, ROUND(AVG(x.order_cnt), 2) AS avg_orders FROM (SELECT user_id, COUNT(*) AS order_cnt, SUM(CASE WHEN order_status = '已退款' THEN 1 ELSE 0 END) AS refund_cnt FROM fact_order GROUP BY user_id) x JOIN dim_user u ON x.user_id = u.user_id WHERE x.refund_cnt > 0 GROUP BY u.register_channel"
+  ],
+  "H5E12": [
+    "SELECT s.shop_name, ROUND(SUM(o.order_amount), 2) AS gmv_sum FROM fact_order o JOIN dim_shop s ON o.shop_id = s.shop_id WHERE date(o.create_time) BETWEEN '2024-05-01' AND '2024-05-07' GROUP BY s.shop_id, s.shop_name ORDER BY gmv_sum DESC LIMIT 3"
+  ],
+  "H5E14": [
+    "SELECT CAST(strftime('%H', pay_time) AS INTEGER) AS pay_hour, COUNT(*) AS cnt FROM fact_order WHERE pay_time IS NOT NULL GROUP BY pay_hour ORDER BY cnt DESC LIMIT 3"
+  ],
+  "H5E20": [
+    "SELECT u.province, COUNT(*) AS user_cnt FROM (SELECT user_id, MAX(create_time) AS last_time FROM fact_order GROUP BY user_id) x JOIN dim_user u ON x.user_id = u.user_id WHERE x.last_time >= '2024-05-25' GROUP BY u.province"
+  ],
+  "H5E22": [
+    "SELECT date(create_time) AS d, COUNT(*) AS cnt FROM fact_order GROUP BY d ORDER BY cnt DESC LIMIT 1"
+  ],
+  "H5C12": [
+    "SELECT c.Country, COUNT(DISTINCT c.CustomerId) AS cust_cnt, ROUND(SUM(il.UnitPrice * il.Quantity) / COUNT(DISTINCT c.CustomerId), 2) AS avg_spend FROM Customer c JOIN Invoice i ON i.CustomerId = c.CustomerId JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId GROUP BY c.Country HAVING COUNT(DISTINCT c.CustomerId) >= 3"
+  ]
+}
