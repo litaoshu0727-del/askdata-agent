@@ -205,13 +205,8 @@
 </div>
 
 <script>
-const SAMPLES = [
-  "销售额最高的三个店铺，店铺名称和销售额分别是多少",
-  "客单价最高的10个用户，他们的用户ID和客单价分别是多少",
-  "因为商品质量问题退款的总金额是多少",
-  "它们的退款金额分别是多少",
-  "每个用户的具体年龄是多少岁",
-];
+// 示例问题按数据集给，由 /api/health 下发
+let SAMPLES = [];
 const STAGES = ["指代消解","关键词抽取","Schema 混合检索","CoT 四元组规划","SQL 生成","MCP 路由执行"];
 
 let sessionId = "web-" + Math.random().toString(36).slice(2, 14);
@@ -237,6 +232,8 @@ async function loadHealth(){
       `<span class="chip ${h.provider === "mock" ? "off" : "on"}">${esc(model)}</span>`,
       `<span class="chip ${h.local_models ? "on" : "off"}">本地向量与精排 ${h.local_models ? "已启用" : "未启用"}</span>`,
     ].join("");
+    SAMPLES = h.samples || [];
+    renderSamples();
   }catch(e){ $("chips").innerHTML = `<span class="chip off">服务未就绪</span>`; }
 }
 
@@ -371,7 +368,7 @@ $("reset").onclick = async () => {
   $("q").value = ""; autosize(); $("q").focus();
 };
 
-renderSamples(); loadHealth();
+loadHealth();
 </script>
 </body>
 </html>

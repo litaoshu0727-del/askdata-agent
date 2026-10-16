@@ -6,7 +6,7 @@ AskData Web 服务。
 
 启动：
     python -m askdata_web.server
-    python -m askdata_web.server --port 8080 --dataset trade
+    python -m askdata_web.server --port 8080 --dataset chinook
 
 接口：
     GET  /               界面
@@ -28,6 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -46,6 +47,42 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # 整条链路是同步的，同一时刻只服务一个请求，避免多人同时问把记忆搅乱
 _LOCK = threading.Lock()
+
+# 问题只有几百字。上限之外的请求体不读，直接 413 并断开连接
+MAX_BODY_BYTES = 1 << 20
+
+# 数据集 → 库名，和 eval/runner.py 的 DATASETS 一致
+DATABASE_NAMES = {
+    "ecommerce": "ecommerce_db",
+    "ecommerce_big": "ecommerce_big_db",
+    "chinook": "chinook_db",
+    "trade": "trade_db",
+}
+
+# 界面上的示例问题，按数据集给。每套最后两道：追问（测指代消解）、库里没有的数据（测诚实拒答）
+SAMPLE_QUESTIONS = {
+    "ecommerce": [
+        "销售额最高的三个店铺，店铺名称和销售额分别是多少",
+        "客单价最高的10个用户，他们的用户ID和客单价分别是多少",
+        "因为商品质量问题退款的总金额是多少",
+        "它们的退款金额分别是多少",
+        "每个用户的具体年龄是多少岁",
+    ],
+    "chinook": [
+        "曲目数最多的 5 个流派，各有多少首曲目",
+        "每位销售支持员工负责多少位客户",
+        "发票金额合计最高的 3 个国家是哪些",
+        "它们各有多少位客户",
+        "每位客户的年龄是多少岁",
+    ],
+    "trade": [
+        "查询总交易笔数大于50000的利率是多少",
+        "活跃天数最多的 5 个用户，他们的交易总金额分别是多少",
+        "它们的利率类型分别是什么",
+        "每个用户的信用评分是多少",
+    ],
+}
+SAMPLE_QUESTIONS["ecommerce_big"] = SAMPLE_QUESTIONS["ecommerce"]
 
 
 def parse_schema_context(text: str) -> List[Dict[str, Any]]:
@@ -122,8 +159,11 @@ class AskDataService:
     """把管线、记忆和路由包成一个可复用的服务对象。"""
 
     def __init__(self, dataset: str, db_path: Path, memory_db: Path):
+        if dataset not in DATABASE_NAMES:
+            raise ValueError(f"未知数据集 {dataset}，可选：{'、'.join(DATABASE_NAMES)}")
+
         self.dataset = dataset
-        database_name = "ecommerce_db" if dataset == "ecommerce" else "trade_db"
+        database_name = DATABASE_NAMES[dataset]
 
         self.pipeline = AskDataText2SQLPipeline(
             PipelineConfig(
@@ -164,6 +204,7 @@ class AskDataService:
             "provider_text": describe_chat_provider(),
             "local_models": use_local_models(),
             "setup_diagnostics": [item.render() for item in self.pipeline.setup_diagnostics],
+            "samples": SAMPLE_QUESTIONS[self.dataset],
         }
 
     def ask(self, query: str, user_id: str, session_id: str) -> Dict[str, Any]:
@@ -241,48 +282,87 @@ def make_handler(service: AskDataService):
             # 默认的 stderr 访问日志会把降级告警冲掉，这里静音
             pass
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
+        def _send(self, status: int, body: bytes, content_type: str, close: bool = False) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if close:
+                # 请求体没读完就回了错误：连接不能再复用，剩下的字节会被当成下一个请求
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, status: int, payload: Dict[str, Any]) -> None:
+        def _json(self, status: int, payload: Dict[str, Any], close: bool = False) -> None:
             body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-            self._send(status, body, "application/json; charset=utf-8")
+            self._send(status, body, "application/json; charset=utf-8", close=close)
+
+        def _read_json(self) -> Optional[Dict[str, Any]]:
+            """
+            读请求体，返回 JSON 对象。不合法时已经回了 4xx，返回 None。
+
+            原先 int(Content-Length) 直接用：不是数字、不是合法 UTF-8、不是 JSON 对象，处理线程
+            抛异常，连接断开，前端收不到任何响应；负数或声称很大时，服务端一直等着读，
+            请求卡住直到客户端断开。
+            """
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._json(400, {"error": "Content-Length 不是整数"}, close=True)
+                return None
+
+            if length < 0:
+                self._json(400, {"error": "Content-Length 不能是负数"}, close=True)
+                return None
+
+            if length > MAX_BODY_BYTES:
+                self._json(413, {"error": f"请求体超过 {MAX_BODY_BYTES} 字节"}, close=True)
+                return None
+
+            raw = self.rfile.read(length) if length else b""
+
+            try:
+                data = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._json(400, {"error": "请求体不是合法 JSON"})
+                return None
+
+            if not isinstance(data, dict):
+                self._json(400, {"error": "请求体必须是 JSON 对象"})
+                return None
+
+            return data
 
         def do_GET(self):  # noqa: N802
-            if self.path in {"/", "/index.html"}:
+            path = urlsplit(self.path).path
+
+            if path in {"/", "/index.html"}:
                 html = (STATIC_DIR / "index.html").read_bytes()
                 self._send(200, html, "text/html; charset=utf-8")
                 return
 
-            if self.path == "/api/health":
+            if path == "/api/health":
                 self._json(200, service.health())
                 return
 
             self._json(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
+            path = urlsplit(self.path).path
+            data = self._read_json()
 
-            try:
-                data = json.loads(raw.decode("utf-8") or "{}")
-            except json.JSONDecodeError:
-                self._json(400, {"error": "请求体不是合法 JSON"})
+            if data is None:
                 return
 
             user_id = str(data.get("user_id") or "web-user")
             session_id = str(data.get("session_id") or "web-session")
 
-            if self.path == "/api/reset":
+            if path == "/api/reset":
                 self._json(200, {"session_id": service.new_session()})
                 return
 
-            if self.path == "/api/ask":
+            if path == "/api/ask":
                 query = str(data.get("query") or "").strip()
 
                 if not query:
@@ -312,7 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
-        "--dataset", default="ecommerce", choices=["ecommerce", "trade"]
+        "--dataset", default="ecommerce", choices=list(DATABASE_NAMES),
+        help="ecommerce_big 是 1076 个字段的压测库；chinook 要先把库放到 runtime_data/chinook.db",
     )
     parser.add_argument("--db-path", default="")
     parser.add_argument(
@@ -344,7 +425,8 @@ def main() -> None:
     print(f"本地向量与精排  {'已启用' if health['local_models'] else '未启用（走 Mock）'}")
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(service))
-    print(f"\n启动完成：http://{args.host}:{args.port}\n")
+    # flush：输出被重定向到文件或管道时是整块缓冲的，不刷就看不到服务已经起来了
+    print(f"\n启动完成：http://{args.host}:{args.port}\n", flush=True)
 
     try:
         server.serve_forever()
