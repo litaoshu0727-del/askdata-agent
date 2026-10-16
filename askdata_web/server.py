@@ -211,6 +211,7 @@ class AskDataService:
                     "columns": log.execution_result.get("columns") or [],
                     "rows": (log.execution_result.get("rows") or [])[:200],
                     "row_count": log.execution_result.get("row_count") or 0,
+                    "truncated": bool(log.execution_result.get("truncated")),
                     "error": log.execution_result.get("error"),
                 }
                 for log in result.step_logs

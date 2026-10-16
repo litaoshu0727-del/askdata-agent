@@ -346,6 +346,14 @@ class AskDataText2SQLPipeline:
                     SQL=" ".join(sql_result.sql.split())[:120],
                 )
 
+            if execution_result.success and execution_result.truncated:
+                emit(
+                    Codes.RESULT_TRUNCATED,
+                    f"SQL 返回超过 {self.config.max_result_rows} 行，只保留前 {self.config.max_result_rows} 行"
+                    "（多半是漏了 GROUP BY 或关联条件）",
+                    SQL=" ".join(sql_result.sql.split())[:120],
+                )
+
             step_logs.append(
                 StepExecutionLog(
                     database=sql_cot_step.database,
@@ -828,6 +836,7 @@ class AskDataText2SQLPipeline:
                 database=self.config.database_name,
                 db_path=self.db_path,
                 readonly=True,
+                max_rows=self.config.max_result_rows,
             ),
         )
 

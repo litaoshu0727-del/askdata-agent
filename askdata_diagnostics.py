@@ -125,6 +125,12 @@ class Codes:
     EMPTY_RESULT_SET = "EMPTY_RESULT_SET"
     """SQL 执行成功但返回 0 行，筛选条件可能有问题（例如凭空推断的 ID）。"""
 
+    RESULT_TRUNCATED = "RESULT_TRUNCATED"
+    """
+    结果超过行数上限（PipelineConfig.max_result_rows），只保留了前面那些行。上限比评测库里
+    最大的表还大，真被截断多半是 SQL 错了：漏了 GROUP BY、漏了关联条件的笛卡尔积。
+    """
+
 
 @dataclass
 class Diagnostic:

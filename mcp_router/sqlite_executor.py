@@ -62,18 +62,24 @@ class SQLiteMCPExecutor:
         timeout: int = 30,
         readonly: bool = True,
         max_seconds: float = 30.0,
+        max_rows: int = 10000,
     ):
         """
         Args:
             timeout: 等数据库锁的秒数（sqlite3.connect 的 timeout），不是查询时长。
             max_seconds: 单条查询最多跑多久，超过就中断。模型偶尔会写出漏了关联条件的
                 笛卡尔积，不设上限会一直卡住。
+            max_rows: 最多取回多少行，超出的截掉并标记 truncated。时长上限管不住快速返回的
+                大结果：漏了 GROUP BY 的明细查询几百毫秒就能吐出几十万行，原先 fetchall()
+                全部取回，再整份存进会话记忆、写进结果解释的回答。默认 1 万行，比几个
+                评测库里最大的表（8715 行）还大——真被截断，多半是 SQL 写错了。
         """
         self.database = database
         self.db_path = str(db_path)
         self.timeout = timeout
         self.readonly = readonly
         self.max_seconds = max_seconds
+        self.max_rows = max_rows
 
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """
@@ -111,10 +117,14 @@ class SQLiteMCPExecutor:
                 [item[0] for item in (cursor.description or [])]
             )
 
+            # 多取一行，才知道是正好 max_rows 行还是被截断了
+            fetched = cursor.fetchmany(self.max_rows + 1)
+            truncated = len(fetched) > self.max_rows
+
             # 按位置填值，不用 dict(row)——同名列会被合并掉，见 unique_column_names。
             result_rows: List[Dict[str, Any]] = [
                 dict(zip(columns, row))
-                for row in cursor.fetchall()
+                for row in fetched[: self.max_rows]
             ]
 
             return MCPExecutionResult(
@@ -124,6 +134,7 @@ class SQLiteMCPExecutor:
                 columns=columns,
                 rows=result_rows,
                 row_count=len(result_rows),
+                truncated=truncated,
             )
 
         except Exception as exc:

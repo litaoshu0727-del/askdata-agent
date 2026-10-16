@@ -35,6 +35,14 @@ class PipelineConfig:
     代价是 N 倍的 CoT 与 SQL 生成开销，检索结果复用不重跑。
     """
 
+    max_result_rows: int = 10000
+    """
+    SQL 结果最多取回多少行，超出的截掉并告警 RESULT_TRUNCATED。
+
+    结果会整份存进会话记忆、写进结果解释的回答；漏了 GROUP BY 的明细查询能返回几十万行。
+    评测题的参考答案最多 30 行，几个库里最大的表 8715 行。
+    """
+
     review_schema_char_budget: int = 40000
     """
     拒答复核和筛选值守卫重规划时，交给 CoT 的 Schema 最多多少字。0 表示不设上限。

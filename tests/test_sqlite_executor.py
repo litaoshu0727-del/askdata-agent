@@ -206,5 +206,52 @@ class UniqueColumnNamesTest(unittest.TestCase):
         self.assertEqual(unique_column_names(["id", "name"]), ["id", "name"])
 
 
+
+class SqliteExecutorRowCapTest(unittest.TestCase):
+    """
+    结果行数有上限。时长上限管不住快速返回的大结果：漏了 GROUP BY 的明细查询几百毫秒
+    就能吐出几十万行，原先 fetchall() 全部取回，再整份存进会话记忆。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / "t.db"
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("CREATE TABLE t (v INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(10)])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_sql(self, sql, **kwargs):
+        executor = SQLiteMCPExecutor(database="db", db_path=self.db, **kwargs)
+        return executor.execute(MCPExecutionRequest(database="db", sql=sql))
+
+    def test_rows_beyond_the_cap_are_cut_and_flagged(self):
+        result = self.run_sql("SELECT v FROM t ORDER BY v", max_rows=3)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.rows, [{"v": 0}, {"v": 1}, {"v": 2}])
+        self.assertEqual(result.row_count, 3)
+        self.assertTrue(result.truncated)
+        self.assertTrue(result.to_dict()["truncated"])
+
+    def test_exactly_at_the_cap_is_not_truncated(self):
+        result = self.run_sql("SELECT v FROM t", max_rows=10)
+        self.assertEqual(result.row_count, 10)
+        self.assertFalse(result.truncated)
+        self.assertFalse(result.to_dict()["truncated"])
+
+    def test_large_result_stops_at_the_default_cap(self):
+        """一百万行的结果只取回默认上限那么多，不会先全部取回再截。"""
+        result = self.run_sql(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000000) SELECT i FROM n"
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.row_count, 10000)
+        self.assertTrue(result.truncated)
+
+
 if __name__ == "__main__":
     unittest.main()

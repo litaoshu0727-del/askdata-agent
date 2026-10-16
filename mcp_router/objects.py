@@ -30,6 +30,8 @@ class MCPExecutionResult:
     rows: List[Dict[str, Any]] = field(default_factory=list)
     row_count: int = 0
     error: Optional[str] = None
+    truncated: bool = False
+    """结果超过执行器的行数上限，rows 只有前 max_rows 行，row_count 也是截断后的行数。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为可序列化字典。"""
@@ -41,4 +43,5 @@ class MCPExecutionResult:
             "rows": self.rows,
             "row_count": self.row_count,
             "error": self.error,
+            "truncated": self.truncated,
         }

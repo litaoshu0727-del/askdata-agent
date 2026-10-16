@@ -160,6 +160,7 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 | `JOIN_PATH_BRIDGED` | 关键词落在的表之间不连通，已沿外键补上桥接表和关联键 |
 | `REVIEW_SCHEMA_BOUNDED` | 全量 Schema 超出长度预算，复核 / 守卫重规划改用有限扩展，或不复核 |
 | `EMPTY_RESULT_SET` | SQL 成功但返回 0 行，多轮追问里常见于凭空推断的 ID |
+| `RESULT_TRUNCATED` | 结果超过 1 万行，只保留前 1 万行；多半是漏了 `GROUP BY` 或关联条件 |
 
 完整列表见 [askdata_diagnostics.py](askdata_diagnostics.py)。
 

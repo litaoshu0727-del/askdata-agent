@@ -275,7 +275,8 @@ function renderRows(step){
   const head = cols.map(c => `<th>${esc(c)}</th>`).join("");
   const body = rows.slice(0,50).map(r =>
     `<tr>${cols.map(c => `<td>${esc(r[c])}</td>`).join("")}</tr>`).join("");
-  const more = rows.length > 50 ? `<div class="more">仅显示前 50 行，共 ${step.row_count} 行</div>` : "";
+  const total = step.truncated ? `超过 ${step.row_count} 行，已截断` : `共 ${step.row_count} 行`;
+  const more = rows.length > 50 ? `<div class="more">仅显示前 50 行，${total}</div>` : "";
   return `<div class="rows"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>${more}</div>`;
 }
 
@@ -314,7 +315,7 @@ function render(d){
     d.steps.forEach((s,i) => {
       parts.push(card(`04.${i+1}`, "生成的 SQL", "", `<pre class="blk sql">${esc(s.sql.trim())}</pre>`));
       parts.push(card(`05.${i+1}`, "执行结果",
-        s.success ? `${s.row_count} 行` : "执行失败", renderRows(s)));
+        s.success ? (s.truncated ? `超过 ${s.row_count} 行` : `${s.row_count} 行`) : "执行失败", renderRows(s)));
     });
 
     if (!d.steps.length){

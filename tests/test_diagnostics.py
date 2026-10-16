@@ -196,6 +196,30 @@ class MockFallbackDiagnosticTestCase(unittest.TestCase):
         self.assertTrue(all(isinstance(item, str) for item in payload["diagnostics"]))
 
 
+
+class ResultTruncatedDiagnosticTestCase(unittest.TestCase):
+    """链路把行数上限交给执行器，截断时留下告警。Mock 内置的这道题返回 5 行。"""
+
+    QUERY = "查询总交易笔数大于50000的利率是多少"
+
+    def run_with_cap(self, **config):
+        with tempfile.TemporaryDirectory() as tmp, silenced():
+            pipeline = AskDataText2SQLPipeline(PipelineConfig(db_path=Path(tmp) / "trade.db", **config))
+            return pipeline.run(self.QUERY)
+
+    def test_result_over_the_cap_is_truncated_and_reported(self):
+        result = self.run_with_cap(max_result_rows=4)
+        execution = result.step_logs[-1].execution_result
+        self.assertEqual((execution["row_count"], execution["truncated"]), (4, True))
+        self.assertIn(Codes.RESULT_TRUNCATED, codes_of(result.diagnostics))
+
+    def test_default_cap_does_not_report(self):
+        result = self.run_with_cap()
+        execution = result.step_logs[-1].execution_result
+        self.assertEqual((execution["row_count"], execution["truncated"]), (5, False))
+        self.assertNotIn(Codes.RESULT_TRUNCATED, codes_of(result.diagnostics))
+
+
 class DatabasePrefixTestCase(unittest.TestCase):
     """
     回归守卫：评测 E09。
