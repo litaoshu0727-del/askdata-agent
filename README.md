@@ -128,6 +128,7 @@ python -m eval.runner --dataset ecommerce_big                   # 1076 个字段
 python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
+python -m eval.runner --bank probes --tag 探针:一对多 --repeat 3  # 探针：整数相除、一对多连接
 python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录
 ```
 

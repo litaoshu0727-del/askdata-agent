@@ -125,11 +125,16 @@ HOLDOUT4_BANKS = {
     "chinook": HOLDOUT4_CHINOOK_CASES,
 }
 
+# 探针：对着一类已知的生成错误写的小题（整数相除、一对多连接），量规则、改规则时回归。
+# 不是留出集，分数不能当泛化证据。见 eval/cases_probes.py。
+from eval.cases_probes import PROBE_BANKS  # noqa: E402
+
 BANKS = {
     "holdout": HOLDOUT_BANKS,
     "holdout2": HOLDOUT2_BANKS,
     "holdout3": HOLDOUT3_BANKS,
     "holdout4": HOLDOUT4_BANKS,
+    "probes": PROBE_BANKS,
 }
 
 # Schema 支撑不了时，CoT 里应该出现的措辞
@@ -1121,11 +1126,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "probes"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
             "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）；"
-            "holdout4 是第四套盲写留出集（ecommerce + Chinook）"
+            "holdout4 是第四套盲写留出集（ecommerce + Chinook）；"
+            "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
     parser.add_argument(
@@ -1160,6 +1166,9 @@ def main() -> None:
         print(f"⚠️ {args.bank} 已经用过（见 docs/实验记录.md）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
 
+    if args.bank == "probes":
+        print("探针是对着具体的失败写的，用来量规则、做回归，分数不能当作泛化能力的证据。")
+
     cases: List[EvalCase] = list(case_pool)
     if args.case:
         cases = [item for item in cases if item.id.upper() == args.case.upper()]
@@ -1177,6 +1186,7 @@ def main() -> None:
     print("=" * 92)
     bank_label = {
         "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四",
+        "probes": "　·　探针",
     }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
     print("=" * 92)
