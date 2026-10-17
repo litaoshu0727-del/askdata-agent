@@ -1,0 +1,55 @@
+{
+  "H6E03": [
+    "SELECT COUNT(*) FROM dws_user_summary WHERE active_days < total_order_count"
+  ],
+  "H6E05": [
+    "SELECT u.user_name FROM dim_user u JOIN dws_user_summary s ON s.user_id = u.user_id WHERE s.total_order_count = 0 AND u.user_id IN (SELECT user_id FROM fact_user_behavior WHERE behavior_type = '加购')"
+  ],
+  "H6E07": [
+    "SELECT d, ROUND(prev - g, 2) FROM (SELECT d, g, LAG(g) OVER (ORDER BY d) AS prev FROM (SELECT date(create_time) AS d, SUM(order_amount) AS g FROM fact_order GROUP BY 1)) WHERE prev IS NOT NULL ORDER BY prev - g DESC LIMIT 1"
+  ],
+  "H6E09": [
+    "SELECT o.channel, ROUND(SUM(p.pay_amount), 2) FROM fact_order o JOIN fact_payment p ON p.order_id = o.order_id WHERE o.user_id IN (SELECT user_id FROM fact_order WHERE order_status <> '已取消' GROUP BY user_id HAVING COUNT(DISTINCT channel) = 1) GROUP BY o.channel"
+  ],
+  "H6E10": [
+    "SELECT u.member_level, ROUND(SUM(o.pay_amount), 2) FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop s ON s.shop_id = o.shop_id WHERE p.pay_channel = '花呗分期' AND s.shop_type = '旗舰店' GROUP BY u.member_level"
+  ],
+  "H6E11": [
+    "SELECT pay_channel, shop_name, pay_amount FROM (SELECT p.pay_channel, s.shop_name, o.pay_amount, RANK() OVER (PARTITION BY p.pay_channel ORDER BY o.pay_amount DESC) AS rk FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_shop s ON s.shop_id = o.shop_id) WHERE rk = 1"
+  ],
+  "H6E12": [
+    "SELECT s.shop_name, ROUND(AVG(x.cnt), 2) FROM (SELECT i.order_id, MAX(p.shop_id) AS shop_id, COUNT(DISTINCT i.product_id) AS cnt FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id GROUP BY i.order_id) x JOIN dim_shop s ON s.shop_id = x.shop_id GROUP BY s.shop_id, s.shop_name HAVING AVG(x.cnt) > 2"
+  ],
+  "H6E13": [
+    "SELECT COUNT(*) FROM dws_user_summary s JOIN fact_order o ON o.user_id = s.user_id AND o.create_time = s.last_order_time WHERE o.order_status = '待支付'"
+  ],
+  "H6E15": [
+    "SELECT d FROM (SELECT d, SUM(g) OVER (ORDER BY d) AS cum FROM (SELECT date(o.create_time) AS d, SUM(o.order_amount) AS g FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id WHERE s.shop_name = '臻品旗舰店4' GROUP BY 1)) WHERE cum > 500000 ORDER BY d LIMIT 1"
+  ],
+  "H6E20": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS s FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id WHERE u.member_level = '钻石会员' AND o.pay_time IS NOT NULL GROUP BY u.user_id, u.user_name ORDER BY s DESC LIMIT 3"
+  ],
+  "H6E22": [
+    "SELECT shop_name, d, g FROM (SELECT s.shop_name, date(o.create_time) AS d, ROUND(SUM(o.order_amount), 2) AS g, RANK() OVER (PARTITION BY o.shop_id ORDER BY SUM(o.order_amount) DESC) AS rk FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY o.shop_id, s.shop_name, date(o.create_time)) WHERE rk = 1"
+  ],
+  "H6E27": [
+    "SELECT COUNT(*) FROM (SELECT user_id FROM fact_order WHERE order_status <> '已取消' GROUP BY user_id HAVING SUM(channel = 'APP') > 0 AND SUM(channel = '直播间') > 0) x WHERE x.user_id NOT IN (SELECT user_id FROM fact_order WHERE order_status = '已退款')",
+    "SELECT COUNT(*) FROM (SELECT user_id FROM fact_order WHERE order_status <> '已取消' GROUP BY user_id HAVING SUM(channel = 'APP') > 0 AND SUM(channel = '直播间') > 0) x JOIN dws_user_summary s ON s.user_id = x.user_id WHERE s.refund_order_count = 0"
+  ],
+  "H6E28": [
+    "SELECT s.shop_name FROM (SELECT shop_id, date(create_time) AS d FROM fact_order GROUP BY shop_id, date(create_time) HAVING SUM(pay_time IS NOT NULL) = 0) x JOIN dim_shop s ON s.shop_id = x.shop_id GROUP BY s.shop_id, s.shop_name HAVING COUNT(*) >= 3",
+    "SELECT s.shop_name FROM (SELECT shop_id, date(create_time) AS d FROM fact_order GROUP BY shop_id, date(create_time) HAVING SUM(order_status IN ('已完成', '已支付', '已退款')) = 0) x JOIN dim_shop s ON s.shop_id = x.shop_id GROUP BY s.shop_id, s.shop_name HAVING COUNT(*) >= 3"
+  ],
+  "H6E29": [
+    "SELECT register_channel, user_name, s FROM (SELECT u.register_channel, u.user_name, ROUND(SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END), 2) AS s, RANK() OVER (PARTITION BY u.register_channel ORDER BY SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END) DESC) AS rk FROM dim_user u JOIN fact_order o ON o.user_id = u.user_id GROUP BY u.user_id, u.register_channel, u.user_name) WHERE rk <= 2"
+  ],
+  "H6C03": [
+    "SELECT m, ROUND(prev - s, 2) FROM (SELECT m, s, LAG(s) OVER (ORDER BY m) AS prev FROM (SELECT strftime('%Y-%m', i.InvoiceDate) AS m, SUM(il.UnitPrice * il.Quantity) AS s FROM Invoice i JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId GROUP BY 1)) WHERE prev IS NOT NULL AND ROUND(prev - s, 2) > 0"
+  ],
+  "H6C06": [
+    "WITH cs AS (SELECT c.CustomerId, c.FirstName, c.LastName, c.Country, SUM(il.UnitPrice * il.Quantity) AS s FROM Customer c JOIN Invoice i ON i.CustomerId = c.CustomerId JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId GROUP BY c.CustomerId, c.FirstName, c.LastName, c.Country), ca AS (SELECT Country, AVG(s) AS a FROM cs GROUP BY Country) SELECT cs.FirstName, cs.LastName FROM cs JOIN ca ON ca.Country = cs.Country WHERE ROUND(cs.s, 2) > ROUND(ca.a, 2)"
+  ],
+  "H6C16": [
+    "SELECT e.FirstName, e.LastName, ROUND(SUM(il.UnitPrice * il.Quantity), 2) FROM Employee m JOIN Employee e ON e.ReportsTo = m.EmployeeId JOIN Customer c ON c.SupportRepId = e.EmployeeId JOIN Invoice i ON i.CustomerId = c.CustomerId JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId WHERE m.FirstName = 'Nancy' AND m.LastName = 'Edwards' AND strftime('%Y', i.InvoiceDate) = '2025' GROUP BY e.EmployeeId, e.FirstName, e.LastName"
+  ]
+}
