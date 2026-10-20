@@ -20,7 +20,8 @@ from askdata_pipeline.ecommerce_data import create_ecommerce_demo_database  # no
 from eval.cases_probes import PROBE_BANKS, WRONG_SQL  # noqa: E402
 from eval.runner import BANKS, DATASETS, case_ndigits, load_expected, normalize_rows  # noqa: E402
 
-BATCH_TAGS = {"探针:整数除法", "探针:整数除法二", "探针:一对多", "探针:一对多二"}
+BATCH_TAGS = {"探针:整数除法", "探针:整数除法二", "探针:一对多", "探针:一对多二", "探针:每组前N", "探针:每组前N二"}
+NO_WRONG_SQL = {"对照", "窗口筛选"}
 CHINOOK_DB = ROOT / "runtime_data" / "chinook.db"
 
 
@@ -58,11 +59,11 @@ class ProbeBankShapeTest(unittest.TestCase):
                 self.assertEqual(len(BATCH_TAGS & set(case.tags)), 1)
 
     def test_wrong_sql_exactly_for_non_control_probes(self):
-        """对照题本来就该连接后直接统计，没有"错误写法"；其余每道都要有。"""
+        """对照题本来就该那样写，窗口筛选题的失败是报错，都没有"错误写法"；其余每道都要有。"""
         for case in self.all_probes():
             with self.subTest(case=case.id):
-                self.assertEqual(case.id in WRONG_SQL, "对照" not in case.tags)
-        self.assertEqual(set(WRONG_SQL), {case.id for case in self.all_probes() if "对照" not in case.tags})
+                self.assertEqual(case.id in WRONG_SQL, not NO_WRONG_SQL & set(case.tags))
+        self.assertEqual(set(WRONG_SQL), {case.id for case in self.all_probes() if not NO_WRONG_SQL & set(case.tags)})
 
 
 class ProbeDiscriminationTest(unittest.TestCase):

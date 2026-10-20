@@ -19,7 +19,7 @@ from pathlib import Path  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest  # noqa: E402
+from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest, TableColumn, TableSchema  # noqa: E402
 from sql_generation.prompt_builder import SqlPromptBuilder  # noqa: E402
 
 
@@ -75,11 +75,69 @@ class SqlPromptRulesTestCase(unittest.TestCase):
                 self.assertIn("不要把两层 GROUP BY 压成一层", prompt)
                 self.assertIn("COUNT(DISTINCT) 只救得了笔数，救不了 SUM", prompt)
 
+    def test_group_topn_and_window_rules_in_both_prompts(self):
+        """
+        第六套：每组前 N 被写成整体排序或全局 LIMIT；修好作用域之后，又在 WHERE 里直接用 LAG(...)。
+        """
+        for name, prompt in self.prompts.items():
+            with self.subTest(提示词=name):
+                self.assertIn("组内取前 N", prompt)
+                self.assertIn("PARTITION BY 分组列", prompt)
+                self.assertIn("外层不再 GROUP BY、不再 SUM", prompt)
+                self.assertIn("不能在同一层的 WHERE、GROUP BY、HAVING 里用", prompt)
+
     def test_date_rule_in_both_prompts(self):
         """E44：带时分秒的字段写成 BETWEEN '起始日' AND '结束日'，结束日当天的记录全漏。"""
         for name, prompt in self.prompts.items():
             with self.subTest(提示词=name):
                 self.assertIn("DATE(字段) BETWEEN", prompt)
+
+
+class RepairErrorAnalysisTestCase(unittest.TestCase):
+    """
+    修正提示的「报错分析」。
+
+    第六套 H6E07、H6C03：子查询把 DATE(create_time) 起了别名，外层又写 DATE(create_time)，报
+    no such column: create_time。旧的第 3 条说"报这个错说明它确实不在 Schema 中"，模型对着 Schema
+    一看字段明明在，就把原 SQL 原样交回：重放 45 次，原样交回 23 次、修好 21 次；加了分析 45/45。
+    """
+
+    def setUp(self):
+        schema = LocalSchema(tables={
+            "fact_order": TableSchema("fact_order", [TableColumn("create_time"), TableColumn("order_amount")]),
+        })
+        self.request = SqlGenerationRequest(
+            cot_step=CotStep(database="db", processing_objects="fact_order.create_time",
+                             operation_instruction="按天汇总", output_target="日期"),
+            local_schema=schema,
+            sql_dialect="SQLite",
+        )
+        self.builder = SqlPromptBuilder()
+
+    def repair_prompt(self, error):
+        return self.builder.build_repair(self.request, failed_sql="SELECT 1", error=error)
+
+    def test_existing_column_is_explained_as_scope(self):
+        for error in ("no such column: create_time", "no such column: t.create_time"):
+            with self.subTest(报错=error):
+                prompt = self.repair_prompt(error)
+                self.assertIn("# 报错分析", prompt)
+                self.assertIn("这一层查询看不到它", prompt)
+                self.assertIn("fact_order", prompt.split("# 报错分析")[1])
+
+    def test_missing_column_keeps_the_plain_rule(self):
+        prompt = self.repair_prompt("no such column: category_id")
+        self.assertNotIn("# 报错分析", prompt)
+        self.assertIn("不在，就改用Schema里真实存在的字段", prompt)
+
+    def test_window_misuse_is_explained(self):
+        prompt = self.repair_prompt("misuse of window function LAG()")
+        self.assertIn("# 报错分析", prompt)
+        self.assertIn("在外层 WHERE 里按这个别名筛选", prompt)
+
+    def test_other_errors_get_no_analysis(self):
+        self.assertNotIn("# 报错分析", self.repair_prompt('near "HAVING": syntax error'))
+        self.assertNotIn("# 报错分析", self.repair_prompt("no such function: YEAR"))
 
 
 if __name__ == "__main__":

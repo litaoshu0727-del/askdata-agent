@@ -10,9 +10,16 @@
                      N01–N04       对照：连接后直接统计本来就对
     探针:一对多二    G01–G09       措辞定了以后才写，换了表和问法
                      M01–M04       对照
+    探针:每组前N     K01–K15       每个 X 里取前 N（第六套之后）；K10–K15 是"连多张表聚合再组内取前 N"
+                     L01–L02       对照：全局前 N
+                     S01–S03       窗口筛选：外层要用窗口函数算出来的值
+    探针:每组前N二   R01–R05       措辞定了以后才写
+                     W01–W04       窗口筛选
+                     L03–L04       对照
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
-`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计。tests/test_probes.py 检查错误写法
+`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断。窗口筛选的题
+没有错误写法：它们的失败是 SQL 报错（外层看不到内层的列、WHERE 里用了窗口函数）。tests/test_probes.py 检查错误写法
 的答案和参考答案确实不同——否则这道探针区分不出规则有没有起作用。对照题没有错误写法，
 它们用来确认规则没把模型带偏。
 
@@ -20,7 +27,7 @@
     python -m eval.runner --bank probes --dataset chinook --repeat 3
 
 整数除法两批原先只存在临时目录里，被系统清理了，从当时的会话记录里原样找回。
-结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」。
+结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」。
 """
 
 from eval.cases import EvalCase
@@ -757,12 +764,547 @@ def _integer_division(sql: str) -> str:
     return sql.replace(" * 1.0", "").replace("100.0", "100")
 
 
+
+
+# ---------------------------------------------------------------------------
+# 每组前 N 和窗口函数（第六套留出集之后）。运行记录里第一批的题号是 P01–P15、Q01–Q02，收进来时改成
+# K01–K15、L01–L02（P、Q 和整数除法探针撞号）；第二批的 Q03、Q04 改成 L03、L04。
+# ---------------------------------------------------------------------------
+
+_TOPN_ECOMMERCE = [
+    EvalCase(
+        id="K01",
+        query="每个城市里，累计实付金额最高的 2 位用户是谁？按用户所在城市分，列出城市、用户编号和实付金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT city, user_id, amt"
+            " FROM (SELECT u.city, o.user_id, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.city ORDER BY SUM(o.pay_amount) DESC) AS rn FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id GROUP BY u.city, o.user_id)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_user.city", "fact_order.pay_amount"],
+        tags=["探针:每组前N"],
+        note="【存疑】题面的「累计实付金额」正好是用户汇总表 total_pay_amount 的中文名，模型三个版本都用了汇总表，和按订单表汇总的参考答案不同。原样保留，不计入规则的归因。",
+    ),
+    EvalCase(
+        id="K02",
+        query="每种店铺类型里，订单笔数最多的是哪家店铺？列出店铺类型、店铺名称和订单笔数。",
+        reference_sql=(
+            "SELECT shop_type, shop_name, cnt"
+            " FROM (SELECT s.shop_type, s.shop_name, COUNT(*) AS cnt, ROW_NUMBER() OVER (PARTITION BY s.shop_type ORDER BY COUNT(*) DESC) AS rn FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY s.shop_type, s.shop_id, s.shop_name)"
+            " WHERE rn = 1"
+        ),
+        must_hit_columns=["dim_shop.shop_type", "dim_shop.shop_name"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K03",
+        query="每个会员等级里，累计实付金额排前 3 的用户是谁？按用户汇总表算，列出会员等级、用户编号和累计实付金额。",
+        reference_sql=(
+            "SELECT member_level, user_id, total_pay_amount"
+            " FROM (SELECT u.member_level, s.user_id, s.total_pay_amount, ROW_NUMBER() OVER (PARTITION BY u.member_level ORDER BY s.total_pay_amount DESC) AS rn FROM dws_user_summary s JOIN dim_user u ON u.user_id = s.user_id)"
+            " WHERE rn <= 3"
+        ),
+        must_hit_columns=["dim_user.member_level", "dws_user_summary.total_pay_amount"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K04",
+        query="每种支付渠道里，单笔支付金额最大的 2 笔支付是哪几笔？列出支付渠道、支付编号和支付金额。",
+        reference_sql=(
+            "SELECT pay_channel, payment_id, pay_amount"
+            " FROM (SELECT pay_channel, payment_id, pay_amount, ROW_NUMBER() OVER (PARTITION BY pay_channel ORDER BY pay_amount DESC) AS rn FROM fact_payment)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["fact_payment.pay_channel", "fact_payment.pay_amount"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K05",
+        query="每个下单渠道里，实付金额最高的 2 笔订单是哪几笔？列出下单渠道、订单编号和实付金额。",
+        reference_sql=(
+            "SELECT channel, order_id, pay_amount"
+            " FROM (SELECT channel, order_id, pay_amount, ROW_NUMBER() OVER (PARTITION BY channel ORDER BY pay_amount DESC) AS rn FROM fact_order)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["fact_order.channel", "fact_order.pay_amount"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="L01",
+        query="累计实付金额最高的 5 位用户是谁？按订单表算，列出用户编号和实付金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT user_id, ROUND(SUM(pay_amount), 2)"
+            " FROM fact_order"
+            " GROUP BY user_id"
+            " ORDER BY SUM(pay_amount) DESC LIMIT 5"
+        ),
+        must_hit_columns=["fact_order.pay_amount"],
+        tags=["探针:每组前N", "对照"],
+    ),
+    EvalCase(
+        id="S01",
+        query="按下单日期看每天的订单笔数，哪一天比前一天多得最多？列出日期和比前一天多了几笔。",
+        reference_sql=(
+            "SELECT d, cnt - prev"
+            " FROM (SELECT d, cnt, LAG(cnt) OVER (ORDER BY d) AS prev FROM (SELECT DATE(create_time) AS d, COUNT(*) AS cnt FROM fact_order GROUP BY DATE(create_time)))"
+            " WHERE prev IS NOT NULL"
+            " ORDER BY cnt - prev DESC LIMIT 1"
+        ),
+        must_hit_columns=["fact_order.create_time"],
+        tags=["探针:每组前N", "窗口筛选"],
+    ),
+    EvalCase(
+        id="K10",
+        query="每个一级类目里，卖出件数最多的 2 个品牌是哪两个？已取消的订单不算。列出一级类目名称、品牌和件数。",
+        reference_sql=(
+            "SELECT cat, brand, qty"
+            " FROM (SELECT c1.category_name AS cat, p.brand, SUM(i.quantity) AS qty, ROW_NUMBER() OVER (PARTITION BY c1.category_id ORDER BY SUM(i.quantity) DESC) AS rn FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c2 ON c2.category_id = p.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE o.order_status <> '已取消' GROUP BY c1.category_id, c1.category_name, p.brand)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_product.brand", "dim_category.parent_category_id", "fact_order_item.quantity"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K11",
+        query="按用户所在省份分，每个省份的用户在哪 2 家店铺花的实付金额最多？列出省份、店铺名称和实付金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT province, shop_name, amt"
+            " FROM (SELECT u.province, s.shop_name, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.province ORDER BY SUM(o.pay_amount) DESC) AS rn FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY u.province, s.shop_id, s.shop_name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_user.province", "dim_shop.shop_name", "fact_order.pay_amount"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K12",
+        query="每个注册渠道来的用户，买的件数最多的 2 个二级类目是哪两个？列出注册渠道、二级类目名称和件数。",
+        reference_sql=(
+            "SELECT ch, cat, qty"
+            " FROM (SELECT u.register_channel AS ch, c.category_name AS cat, SUM(i.quantity) AS qty, ROW_NUMBER() OVER (PARTITION BY u.register_channel ORDER BY SUM(i.quantity) DESC) AS rn FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id JOIN dim_user u ON u.user_id = o.user_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id GROUP BY u.register_channel, c.category_id, c.category_name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_user.register_channel", "dim_category.category_name", "fact_order_item.quantity"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K13",
+        query="按店铺所在城市分，每个城市卖得最多的品牌是哪个（按商品明细金额算）？列出城市、品牌和明细金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT city, brand, amt"
+            " FROM (SELECT s.city, p.brand, ROUND(SUM(i.item_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY s.city ORDER BY SUM(i.item_amount) DESC) AS rn FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_product p ON p.product_id = i.product_id GROUP BY s.city, p.brand)"
+            " WHERE rn = 1"
+        ),
+        must_hit_columns=["dim_shop.city", "dim_product.brand", "fact_order_item.item_amount"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="R01",
+        query="按用户所在省份分，每个省份的用户买的件数最多的 2 个品牌是哪两个？已取消的订单不算。列出省份、品牌和件数。",
+        reference_sql=(
+            "SELECT province, brand, qty"
+            " FROM (SELECT u.province, p.brand, SUM(i.quantity) AS qty, ROW_NUMBER() OVER (PARTITION BY u.province ORDER BY SUM(i.quantity) DESC) AS rn FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id JOIN dim_user u ON u.user_id = o.user_id JOIN dim_product p ON p.product_id = i.product_id WHERE o.order_status <> '已取消' GROUP BY u.province, p.brand)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_user.province", "dim_product.brand", "fact_order_item.quantity"],
+        tags=["探针:每组前N二"],
+    ),
+    EvalCase(
+        id="R02",
+        query="每种店铺类型里，退款金额合计最高的 2 家店铺是哪两家？列出店铺类型、店铺名称和退款金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT shop_type, shop_name, amt"
+            " FROM (SELECT s.shop_type, s.shop_name, ROUND(SUM(r.refund_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY s.shop_type ORDER BY SUM(r.refund_amount) DESC) AS rn FROM fact_refund r JOIN fact_order o ON o.order_id = r.order_id JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY s.shop_type, s.shop_id, s.shop_name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_shop.shop_type", "dim_shop.shop_name", "fact_refund.refund_amount"],
+        tags=["探针:每组前N二"],
+    ),
+    EvalCase(
+        id="R03",
+        query="每个年龄段的用户，浏览次数最多的 2 个一级类目是哪两个？列出年龄段、一级类目名称和浏览次数。",
+        reference_sql=(
+            "SELECT age_group, cat, cnt"
+            " FROM (SELECT u.age_group, c1.category_name AS cat, COUNT(*) AS cnt, ROW_NUMBER() OVER (PARTITION BY u.age_group ORDER BY COUNT(*) DESC) AS rn FROM fact_user_behavior b JOIN dim_user u ON u.user_id = b.user_id JOIN dim_product p ON p.product_id = b.product_id JOIN dim_category c2 ON c2.category_id = p.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE b.behavior_type = '浏览' GROUP BY u.age_group, c1.category_id, c1.category_name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["dim_user.age_group", "dim_category.parent_category_id", "fact_user_behavior.behavior_type"],
+        tags=["探针:每组前N二"],
+    ),
+    EvalCase(
+        id="W01",
+        query="按店铺日汇总表看，每家店铺有多少天的销售额（GMV）比自己前一天高？每家店铺的第一天不算。列出店铺名称和天数。",
+        reference_sql=(
+            "SELECT s.shop_name, COUNT(*)"
+            " FROM (SELECT shop_id, gmv, LAG(gmv) OVER (PARTITION BY shop_id ORDER BY stat_date) AS prev FROM dws_shop_daily) d"
+            " JOIN dim_shop s ON s.shop_id = d.shop_id"
+            " WHERE d.prev IS NOT NULL AND d.gmv > d.prev"
+            " GROUP BY s.shop_id, s.shop_name"
+        ),
+        must_hit_columns=["dws_shop_daily.gmv", "dws_shop_daily.stat_date", "dim_shop.shop_name"],
+        tags=["探针:每组前N二", "窗口筛选"],
+    ),
+    EvalCase(
+        id="W02",
+        query="每位用户按下单时间排的第二笔订单，比第一笔订单的实付金额多出多少？多出最多的 3 位用户是谁？只有一笔订单的用户不算。列出用户编号和多出的金额（保留两位小数）。",
+        reference_sql=(
+            "SELECT user_id, ROUND(d, 2)"
+            " FROM (SELECT user_id, pay_amount - LAG(pay_amount) OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS d, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS rn FROM fact_order)"
+            " WHERE rn = 2"
+            " ORDER BY d DESC LIMIT 3"
+        ),
+        must_hit_columns=["fact_order.create_time", "fact_order.pay_amount"],
+        tags=["探针:每组前N二", "窗口筛选"],
+    ),
+    EvalCase(
+        id="L03",
+        query="退款金额合计最高的 3 个退款原因是哪些？列出退款原因和退款金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT refund_reason, ROUND(SUM(refund_amount), 2)"
+            " FROM fact_refund"
+            " GROUP BY refund_reason"
+            " ORDER BY SUM(refund_amount) DESC LIMIT 3"
+        ),
+        must_hit_columns=["fact_refund.refund_reason", "fact_refund.refund_amount"],
+        tags=["探针:每组前N二", "对照"],
+    ),
+]
+
+_TOPN_CHINOOK = [
+    EvalCase(
+        id="K06",
+        query="每种媒体类型里，时长最长的 2 首曲目是哪两首？列出媒体类型名称、曲目名称和时长（毫秒）。",
+        reference_sql=(
+            "SELECT mt, name, ms"
+            " FROM (SELECT m.Name AS mt, t.Name AS name, t.Milliseconds AS ms, ROW_NUMBER() OVER (PARTITION BY t.MediaTypeId ORDER BY t.Milliseconds DESC) AS rn FROM Track t JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["MediaType.Name", "Track.Milliseconds"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K07",
+        query="每位销售支持员工负责的客户里，消费总额最高的 2 位客户是谁？列出员工编号、客户编号和消费总额（保留两位小数）。",
+        reference_sql=(
+            "SELECT rep, cid, amt"
+            " FROM (SELECT c.SupportRepId AS rep, c.CustomerId AS cid, ROUND(SUM(i.Total), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY c.SupportRepId ORDER BY SUM(i.Total) DESC) AS rn FROM Customer c JOIN Invoice i ON i.CustomerId = c.CustomerId GROUP BY c.SupportRepId, c.CustomerId)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["Customer.SupportRepId", "Invoice.Total"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K08",
+        query="每一年里，发票金额合计排前 3 的账单国家是哪几个？列出年份、国家和金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT y, country, amt"
+            " FROM (SELECT strftime('%Y', InvoiceDate) AS y, BillingCountry AS country, ROUND(SUM(Total), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY strftime('%Y', InvoiceDate) ORDER BY SUM(Total) DESC) AS rn FROM Invoice GROUP BY 1, 2)"
+            " WHERE rn <= 3"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Invoice.BillingCountry", "Invoice.Total"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K09",
+        query="每种媒体类型里，文件最大的 3 首曲目是哪几首？列出媒体类型名称、曲目名称和文件大小（字节）。",
+        reference_sql=(
+            "SELECT mt, name, b"
+            " FROM (SELECT m.Name AS mt, t.Name AS name, t.Bytes AS b, ROW_NUMBER() OVER (PARTITION BY t.MediaTypeId ORDER BY t.Bytes DESC) AS rn FROM Track t JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId)"
+            " WHERE rn <= 3"
+        ),
+        must_hit_columns=["MediaType.Name", "Track.Bytes"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="L02",
+        query="曲目数最多的 3 个流派是哪几个？列出流派名称和曲目数。",
+        reference_sql=(
+            "SELECT g.Name, COUNT(*)"
+            " FROM Track t"
+            " JOIN Genre g ON g.GenreId = t.GenreId"
+            " GROUP BY g.GenreId, g.Name"
+            " ORDER BY COUNT(*) DESC LIMIT 3"
+        ),
+        must_hit_columns=["Genre.Name"],
+        tags=["探针:每组前N", "对照"],
+    ),
+    EvalCase(
+        id="S02",
+        query="按开票年份看发票金额合计，每一年比上一年多了或少了多少？第一年不用比。列出年份和变化金额（保留两位小数，少了是负数）。",
+        reference_sql=(
+            "SELECT y, ROUND(s - prev, 2)"
+            " FROM (SELECT y, s, LAG(s) OVER (ORDER BY y) AS prev FROM (SELECT strftime('%Y', InvoiceDate) AS y, SUM(Total) AS s FROM Invoice GROUP BY 1))"
+            " WHERE prev IS NOT NULL"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Invoice.Total"],
+        tags=["探针:每组前N", "窗口筛选"],
+    ),
+    EvalCase(
+        id="S03",
+        query="按开票月份看发票金额合计，哪 3 个月比上个月涨得最多？第一个月不用比。列出月份（年-月）和涨了多少（保留两位小数）。",
+        reference_sql=(
+            "SELECT m, ROUND(s - prev, 2)"
+            " FROM (SELECT m, s, LAG(s) OVER (ORDER BY m) AS prev FROM (SELECT strftime('%Y-%m', InvoiceDate) AS m, SUM(Total) AS s FROM Invoice GROUP BY 1))"
+            " WHERE prev IS NOT NULL"
+            " ORDER BY s - prev DESC LIMIT 3"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Invoice.Total"],
+        tags=["探针:每组前N", "窗口筛选"],
+    ),
+    EvalCase(
+        id="K14",
+        query="每位销售支持员工负责的客户，买得最多的 2 个音乐流派是哪两个（按购买份数算）？列出员工编号、流派名称和份数。",
+        reference_sql=(
+            "SELECT rep, genre, qty"
+            " FROM (SELECT c.SupportRepId AS rep, g.Name AS genre, SUM(il.Quantity) AS qty, ROW_NUMBER() OVER (PARTITION BY c.SupportRepId ORDER BY SUM(il.Quantity) DESC) AS rn FROM InvoiceLine il JOIN Invoice i ON i.InvoiceId = il.InvoiceId JOIN Customer c ON c.CustomerId = i.CustomerId JOIN Track t ON t.TrackId = il.TrackId JOIN Genre g ON g.GenreId = t.GenreId GROUP BY c.SupportRepId, g.GenreId, g.Name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["Customer.SupportRepId", "Genre.Name", "InvoiceLine.Quantity"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="K15",
+        query="每一年里，销售额最高的艺术家是谁（按发票明细的单价乘数量算）？列出年份、艺术家名和销售额（保留两位小数）。",
+        reference_sql=(
+            "SELECT y, artist, amt"
+            " FROM (SELECT strftime('%Y', i.InvoiceDate) AS y, ar.Name AS artist, ROUND(SUM(il.UnitPrice * il.Quantity), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY strftime('%Y', i.InvoiceDate) ORDER BY SUM(il.UnitPrice * il.Quantity) DESC) AS rn FROM InvoiceLine il JOIN Invoice i ON i.InvoiceId = il.InvoiceId JOIN Track t ON t.TrackId = il.TrackId JOIN Album al ON al.AlbumId = t.AlbumId JOIN Artist ar ON ar.ArtistId = al.ArtistId GROUP BY 1, ar.ArtistId, ar.Name)"
+            " WHERE rn = 1"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Artist.Name", "InvoiceLine.UnitPrice"],
+        tags=["探针:每组前N"],
+    ),
+    EvalCase(
+        id="R04",
+        query="每一年里，卖出份数最多的 2 个音乐流派是哪两个？列出年份、流派名称和份数。",
+        reference_sql=(
+            "SELECT y, genre, qty"
+            " FROM (SELECT strftime('%Y', i.InvoiceDate) AS y, g.Name AS genre, SUM(il.Quantity) AS qty, ROW_NUMBER() OVER (PARTITION BY strftime('%Y', i.InvoiceDate) ORDER BY SUM(il.Quantity) DESC) AS rn FROM InvoiceLine il JOIN Invoice i ON i.InvoiceId = il.InvoiceId JOIN Track t ON t.TrackId = il.TrackId JOIN Genre g ON g.GenreId = t.GenreId GROUP BY 1, g.GenreId, g.Name)"
+            " WHERE rn <= 2"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Genre.Name", "InvoiceLine.Quantity"],
+        tags=["探针:每组前N二"],
+    ),
+    EvalCase(
+        id="R05",
+        query="Rock 和 Jazz 这两个流派里，各自销售额最高的是哪张专辑（按发票明细的单价乘数量算）？列出流派名称、专辑名称和销售额（保留两位小数）。",
+        reference_sql=(
+            "SELECT genre, title, amt"
+            " FROM (SELECT g.Name AS genre, al.Title AS title, ROUND(SUM(il.UnitPrice * il.Quantity), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY g.GenreId ORDER BY SUM(il.UnitPrice * il.Quantity) DESC) AS rn FROM InvoiceLine il JOIN Track t ON t.TrackId = il.TrackId JOIN Genre g ON g.GenreId = t.GenreId JOIN Album al ON al.AlbumId = t.AlbumId WHERE g.Name IN ('Rock', 'Jazz') GROUP BY g.GenreId, g.Name, al.AlbumId, al.Title)"
+            " WHERE rn = 1"
+        ),
+        must_hit_columns=["Genre.Name", "Album.Title", "InvoiceLine.UnitPrice"],
+        tags=["探针:每组前N二"],
+    ),
+    EvalCase(
+        id="W03",
+        query="有多少张发票的金额比同一位客户的上一张发票高？每位客户的第一张发票不算。返回一个数。",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM (SELECT Total, LAG(Total) OVER (PARTITION BY CustomerId ORDER BY InvoiceDate, InvoiceId) AS prev FROM Invoice)"
+            " WHERE Total > prev"
+        ),
+        must_hit_columns=["Invoice.Total", "Invoice.CustomerId", "Invoice.InvoiceDate"],
+        tags=["探针:每组前N二", "窗口筛选"],
+    ),
+    EvalCase(
+        id="W04",
+        query="按账单国家和开票年份汇总发票金额，每一年有多少个国家的金额比自己上一年高？每个国家的第一年不算。列出年份和国家数。",
+        reference_sql=(
+            "SELECT y, COUNT(*)"
+            " FROM (SELECT BillingCountry, strftime('%Y', InvoiceDate) AS y, SUM(Total) AS s, LAG(SUM(Total)) OVER (PARTITION BY BillingCountry ORDER BY strftime('%Y', InvoiceDate)) AS prev FROM Invoice GROUP BY 1, 2)"
+            " WHERE s > prev"
+            " GROUP BY y"
+        ),
+        must_hit_columns=["Invoice.BillingCountry", "Invoice.InvoiceDate", "Invoice.Total"],
+        tags=["探针:每组前N二", "窗口筛选"],
+        note="【存疑】「比自己上一年高」：参考答案和上一个有数据的年份比（LAG），模型按日历上的前一年比（年份 - 1 自连接）；有的国家中间缺一年，两种算法不同。原样保留，不计入规则的归因。",
+    ),
+    EvalCase(
+        id="L04",
+        query="销售额最高的 3 张专辑是哪几张（按发票明细的单价乘数量算）？列出专辑名称和销售额（保留两位小数）。",
+        reference_sql=(
+            "SELECT al.Title, ROUND(SUM(il.UnitPrice * il.Quantity), 2)"
+            " FROM InvoiceLine il"
+            " JOIN Track t ON t.TrackId = il.TrackId"
+            " JOIN Album al ON al.AlbumId = t.AlbumId"
+            " GROUP BY al.AlbumId, al.Title"
+            " ORDER BY SUM(il.UnitPrice * il.Quantity) DESC LIMIT 3"
+        ),
+        must_hit_columns=["Album.Title", "InvoiceLine.UnitPrice"],
+        tags=["探针:每组前N二", "对照"],
+    ),
+]
+
+TOPN_WRONG_SQL = {
+    "K01": (
+        "SELECT u.city, o.user_id, ROUND(SUM(o.pay_amount), 2)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " GROUP BY u.city, o.user_id"
+        " ORDER BY u.city, SUM(o.pay_amount) DESC"
+    ),
+    "K02": (
+        "SELECT s.shop_type, s.shop_name, COUNT(*)"
+        " FROM fact_order o"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " GROUP BY s.shop_type, s.shop_id"
+        " ORDER BY COUNT(*) DESC LIMIT 1"
+    ),
+    "K03": (
+        "SELECT u.member_level, s.user_id, s.total_pay_amount"
+        " FROM dws_user_summary s"
+        " JOIN dim_user u ON u.user_id = s.user_id"
+        " ORDER BY s.total_pay_amount DESC LIMIT 3"
+    ),
+    "K04": (
+        "SELECT pay_channel, payment_id, pay_amount"
+        " FROM fact_payment"
+        " ORDER BY pay_amount DESC LIMIT 2"
+    ),
+    "K05": (
+        "SELECT channel, order_id, pay_amount"
+        " FROM fact_order"
+        " ORDER BY pay_amount DESC LIMIT 2"
+    ),
+    "K06": (
+        "SELECT m.Name, t.Name, t.Milliseconds"
+        " FROM Track t"
+        " JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId"
+        " ORDER BY t.Milliseconds DESC LIMIT 2"
+    ),
+    "K07": (
+        "SELECT c.SupportRepId, c.CustomerId, ROUND(SUM(i.Total), 2)"
+        " FROM Customer c"
+        " JOIN Invoice i ON i.CustomerId = c.CustomerId"
+        " GROUP BY c.SupportRepId, c.CustomerId"
+        " ORDER BY c.SupportRepId, SUM(i.Total) DESC"
+    ),
+    "K08": (
+        "SELECT strftime('%Y', InvoiceDate), BillingCountry, ROUND(SUM(Total), 2)"
+        " FROM Invoice"
+        " GROUP BY 1, 2"
+        " ORDER BY SUM(Total) DESC LIMIT 3"
+    ),
+    "K09": (
+        "SELECT m.Name, t.Name, t.Bytes"
+        " FROM Track t"
+        " JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId"
+        " ORDER BY t.Bytes DESC LIMIT 3"
+    ),
+    "K10": (
+        "SELECT c1.category_name, p.brand, SUM(i.quantity)"
+        " FROM fact_order_item i"
+        " JOIN fact_order o ON o.order_id = i.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c2 ON c2.category_id = p.category_id"
+        " JOIN dim_category c1 ON c1.category_id = c2.parent_category_id"
+        " WHERE o.order_status <> '已取消'"
+        " GROUP BY c1.category_id, p.brand"
+        " ORDER BY c1.category_name, SUM(i.quantity) DESC"
+    ),
+    "K11": (
+        "SELECT u.province, s.shop_name, ROUND(SUM(o.pay_amount), 2)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " GROUP BY u.province, s.shop_id"
+        " ORDER BY SUM(o.pay_amount) DESC LIMIT 2"
+    ),
+    "K12": (
+        "SELECT u.register_channel, c.category_name, SUM(i.quantity)"
+        " FROM fact_order_item i"
+        " JOIN fact_order o ON o.order_id = i.order_id"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " GROUP BY 1, c.category_id"
+        " ORDER BY 1, 3 DESC"
+    ),
+    "K13": (
+        "SELECT s.city, p.brand, ROUND(SUM(i.item_amount), 2)"
+        " FROM fact_order_item i"
+        " JOIN fact_order o ON o.order_id = i.order_id"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " GROUP BY s.city, p.brand"
+        " ORDER BY SUM(i.item_amount) DESC LIMIT 1"
+    ),
+    "K14": (
+        "SELECT c.SupportRepId, g.Name, SUM(il.Quantity)"
+        " FROM InvoiceLine il"
+        " JOIN Invoice i ON i.InvoiceId = il.InvoiceId"
+        " JOIN Customer c ON c.CustomerId = i.CustomerId"
+        " JOIN Track t ON t.TrackId = il.TrackId"
+        " JOIN Genre g ON g.GenreId = t.GenreId"
+        " GROUP BY 1, g.GenreId"
+        " ORDER BY 1, 3 DESC"
+    ),
+    "K15": (
+        "SELECT strftime('%Y', i.InvoiceDate), ar.Name, ROUND(SUM(il.UnitPrice * il.Quantity), 2)"
+        " FROM InvoiceLine il"
+        " JOIN Invoice i ON i.InvoiceId = il.InvoiceId"
+        " JOIN Track t ON t.TrackId = il.TrackId"
+        " JOIN Album al ON al.AlbumId = t.AlbumId"
+        " JOIN Artist ar ON ar.ArtistId = al.ArtistId"
+        " GROUP BY 1, ar.ArtistId"
+        " ORDER BY 3 DESC LIMIT 1"
+    ),
+    "R01": (
+        "SELECT u.province, p.brand, SUM(i.quantity)"
+        " FROM fact_order_item i"
+        " JOIN fact_order o ON o.order_id = i.order_id"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " WHERE o.order_status <> '已取消'"
+        " GROUP BY 1, 2"
+        " ORDER BY 1, 3 DESC"
+    ),
+    "R02": (
+        "SELECT s.shop_type, s.shop_name, ROUND(SUM(r.refund_amount), 2)"
+        " FROM fact_refund r"
+        " JOIN fact_order o ON o.order_id = r.order_id"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " GROUP BY s.shop_type, s.shop_id"
+        " ORDER BY SUM(r.refund_amount) DESC LIMIT 2"
+    ),
+    "R03": (
+        "SELECT u.age_group, c1.category_name, COUNT(*)"
+        " FROM fact_user_behavior b"
+        " JOIN dim_user u ON u.user_id = b.user_id"
+        " JOIN dim_product p ON p.product_id = b.product_id"
+        " JOIN dim_category c2 ON c2.category_id = p.category_id"
+        " JOIN dim_category c1 ON c1.category_id = c2.parent_category_id"
+        " WHERE b.behavior_type = '浏览'"
+        " GROUP BY 1, c1.category_id"
+        " ORDER BY 1, 3 DESC"
+    ),
+    "R04": (
+        "SELECT strftime('%Y', i.InvoiceDate), g.Name, SUM(il.Quantity)"
+        " FROM InvoiceLine il"
+        " JOIN Invoice i ON i.InvoiceId = il.InvoiceId"
+        " JOIN Track t ON t.TrackId = il.TrackId"
+        " JOIN Genre g ON g.GenreId = t.GenreId"
+        " GROUP BY 1, g.GenreId"
+        " ORDER BY 3 DESC LIMIT 2"
+    ),
+    "R05": (
+        "SELECT g.Name, al.Title, ROUND(SUM(il.UnitPrice * il.Quantity), 2)"
+        " FROM InvoiceLine il"
+        " JOIN Track t ON t.TrackId = il.TrackId"
+        " JOIN Genre g ON g.GenreId = t.GenreId"
+        " JOIN Album al ON al.AlbumId = t.AlbumId"
+        " WHERE g.Name IN ('Rock', 'Jazz')"
+        " GROUP BY g.GenreId, al.AlbumId"
+        " ORDER BY 3 DESC LIMIT 1"
+    ),
+}
+
+
 WRONG_SQL = {
     **{case.id: _integer_division(case.reference_sql) for case in _INT_DIV_ECOMMERCE + _INT_DIV_CHINOOK},
     **FAN_OUT_SQL,
+    **TOPN_WRONG_SQL,
 }
 
 PROBE_BANKS = {
-    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE,
-    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK,
+    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE,
+    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK,
 }
