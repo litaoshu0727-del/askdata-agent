@@ -1,0 +1,43 @@
+{
+  "H7E02": [
+    "SELECT shop_type, shop_name, amt FROM (SELECT s.shop_type, s.shop_name, ROUND(SUM(d.pay_amount), 2) AS amt, RANK() OVER (PARTITION BY s.shop_type ORDER BY SUM(d.pay_amount) DESC) AS rk FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id GROUP BY s.shop_id, s.shop_type, s.shop_name) t WHERE rk = 1"
+  ],
+  "H7E04": [
+    "SELECT o.channel, COUNT(*) FROM fact_order o JOIN dws_user_summary s ON s.user_id = o.user_id AND s.last_order_time = o.create_time GROUP BY o.channel"
+  ],
+  "H7E06": [
+    "WITH t AS (SELECT DISTINCT o.user_id, pc.category_name AS l1 FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c ON c.category_id = s.main_category_id JOIN dim_category pc ON pc.category_id = c.parent_category_id WHERE o.order_status = '已完成') SELECT l1, COUNT(*) FROM (SELECT user_id, MIN(l1) AS l1 FROM t GROUP BY user_id HAVING COUNT(DISTINCT l1) = 1) x GROUP BY l1"
+  ],
+  "H7E07": [
+    "WITH d AS (SELECT shop_id, date(create_time) AS dt, SUM(order_amount) AS g FROM fact_order GROUP BY shop_id, date(create_time)), c AS (SELECT shop_id, dt, SUM(g) OVER (PARTITION BY shop_id ORDER BY dt) AS cum FROM d) SELECT s.shop_name, MIN(c.dt) FROM c JOIN dim_shop s ON s.shop_id = c.shop_id WHERE c.cum >= 300000 GROUP BY c.shop_id, s.shop_name"
+  ],
+  "H7E10": [
+    "SELECT pc.category_name, ROUND(SUM(r.refund_amount), 2) FROM fact_refund r JOIN fact_order o ON o.order_id = r.order_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c ON c.category_id = s.main_category_id JOIN dim_category pc ON pc.category_id = c.parent_category_id WHERE r.refund_reason = '商品质量问题' AND r.refund_status = '退款成功' GROUP BY pc.category_id, pc.category_name"
+  ],
+  "H7E14": [
+    "WITH p AS (SELECT user_id, SUM(pay_amount) AS amt FROM fact_order WHERE pay_time IS NOT NULL GROUP BY user_id), g AS (SELECT u.age_group, u.province, AVG(COALESCE(p.amt, 0)) AS a FROM dim_user u LEFT JOIN p ON p.user_id = u.user_id GROUP BY u.age_group, u.province) SELECT age_group, province, ROUND(a, 2) FROM (SELECT *, RANK() OVER (PARTITION BY age_group ORDER BY a DESC) AS rk FROM g) t WHERE rk = 1"
+  ],
+  "H7E15": [
+    "SELECT o.channel, ROUND(100.0 * SUM((strftime('%s', p.pay_time) - strftime('%s', o.create_time)) > 3600) / COUNT(*), 2) FROM fact_order o JOIN fact_payment p ON p.order_id = o.order_id GROUP BY o.channel"
+  ],
+  "H7E16": [
+    "SELECT s.shop_name, COUNT(*) FROM (SELECT shop_id, date(create_time) AS dt FROM fact_order GROUP BY shop_id, date(create_time) HAVING COUNT(*) >= 4) d JOIN dim_shop s ON s.shop_id = d.shop_id GROUP BY d.shop_id, s.shop_name HAVING COUNT(*) >= 4"
+  ],
+  "H7E18": [
+    "SELECT u.member_level, COUNT(*) FROM (SELECT o.user_id FROM fact_refund r JOIN fact_order o ON o.order_id = r.order_id GROUP BY o.user_id HAVING COUNT(DISTINCT r.order_id) >= 2) x JOIN dim_user u ON u.user_id = x.user_id GROUP BY u.member_level",
+    "SELECT u.member_level, COUNT(*) FROM (SELECT user_id FROM fact_order WHERE order_status = '已退款' GROUP BY user_id HAVING COUNT(*) >= 2) x JOIN dim_user u ON u.user_id = x.user_id GROUP BY u.member_level"
+  ],
+  "H7E22": [
+    "WITH p AS (SELECT user_id, ROUND(SUM(pay_amount), 2) AS amt FROM fact_order WHERE pay_time IS NOT NULL GROUP BY user_id) SELECT city, user_name, amt FROM (SELECT u.city, u.user_name, p.amt, RANK() OVER (PARTITION BY u.city ORDER BY p.amt DESC) AS rk FROM dim_user u JOIN p ON p.user_id = u.user_id) t WHERE rk <= 2"
+  ],
+  "H7E23": [
+    "SELECT u.user_name FROM dim_user u WHERE u.user_id IN (SELECT user_id FROM fact_order GROUP BY user_id HAVING SUM(order_status IN ('已完成', '已支付', '已退款')) = 0)",
+    "SELECT u.user_name FROM dws_user_summary s JOIN dim_user u ON u.user_id = s.user_id WHERE s.total_order_count > 0 AND s.total_pay_amount = 0"
+  ],
+  "H7E25": [
+    "SELECT s.shop_type, ROUND(SUM(o.pay_amount), 2) FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop s ON s.shop_id = o.shop_id WHERE u.member_level IN ('金卡会员', '钻石会员') AND p.pay_channel = '微信支付' GROUP BY s.shop_type"
+  ],
+  "H7E27": [
+    "SELECT s.shop_name, ROUND(SUM(r.refund_amount), 2) FROM fact_refund r JOIN fact_order o ON o.order_id = r.order_id JOIN dim_shop s ON s.shop_id = o.shop_id WHERE date(o.create_time) BETWEEN '2024-05-01' AND '2024-05-07' GROUP BY o.shop_id, s.shop_name ORDER BY SUM(r.refund_amount) DESC LIMIT 3"
+  ]
+}

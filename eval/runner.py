@@ -156,6 +156,21 @@ HOLDOUT6_BANKS = {
     "chinook": HOLDOUT6_CHINOOK_CASES,
 }
 
+# 第七套：规范同第六套，验证第六套之后的改动——每组前 N 和窗口函数规则、修正提示的报错分析、
+# 修正最多 2 次、结果形状检查。冻结后还没运行过。
+try:
+    from eval.cases_holdout7 import (  # noqa: E402
+        HOLDOUT7_CHINOOK_CASES,
+        HOLDOUT7_ECOMMERCE_CASES,
+    )
+except ImportError:
+    HOLDOUT7_ECOMMERCE_CASES, HOLDOUT7_CHINOOK_CASES = [], []
+
+HOLDOUT7_BANKS = {
+    "ecommerce": HOLDOUT7_ECOMMERCE_CASES,
+    "chinook": HOLDOUT7_CHINOOK_CASES,
+}
+
 # 探针：对着一类已知的生成错误写的小题（整数相除、一对多连接），量规则、改规则时回归。
 # 不是留出集，分数不能当泛化证据。见 eval/cases_probes.py。
 from eval.cases_probes import PROBE_BANKS  # noqa: E402
@@ -167,6 +182,7 @@ BANKS = {
     "holdout4": HOLDOUT4_BANKS,
     "holdout5": HOLDOUT5_BANKS,
     "holdout6": HOLDOUT6_BANKS,
+    "holdout7": HOLDOUT7_BANKS,
     "probes": PROBE_BANKS,
 }
 
@@ -1159,13 +1175,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "probes"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "probes"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
             "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）；"
             "holdout4 是第四套盲写留出集（ecommerce + Chinook）；"
             "holdout5 是第五套盲写留出集（ecommerce + Chinook）；"
             "holdout6 是第六套，更难的一套（ecommerce + Chinook）；"
+            "holdout7 是第七套，规范同第六套（ecommerce + Chinook，冻结后未运行）；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1220,7 +1237,7 @@ def main() -> None:
 
     print("=" * 92)
     bank_label = {
-        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四", "holdout5": "　·　留出集五", "holdout6": "　·　留出集六",
+        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四", "holdout5": "　·　留出集五", "holdout6": "　·　留出集六", "holdout7": "　·　留出集七",
         "probes": "　·　探针",
     }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
