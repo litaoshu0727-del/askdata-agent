@@ -25,12 +25,12 @@ from pathlib import Path  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from askdata_diagnostics import silenced  # noqa: E402
+from askdata_diagnostics import Codes, silenced  # noqa: E402
 from askdata_pipeline.filter_guard import DroppedFilter  # noqa: E402
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
 from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
 from eval.cases import EvalCase  # noqa: E402
-from eval.runner import RunRecorder, run_case  # noqa: E402
+from eval.runner import RunRecorder, build_parser, run_case  # noqa: E402
 from mcp_router.objects import MCPExecutionResult  # noqa: E402
 
 # 没有 Key 时 CoT 和 SQL 走 Mock，这道是 Mock 内置的题，离线就能跑完整条链路
@@ -111,6 +111,37 @@ class SqlTraceTest(unittest.TestCase):
         kinds = [(entry["kind"], entry["success"]) for entry in result.sql_trace]
         self.assertEqual(kinds, [("生成", False), ("修正", True)])
         self.assertEqual(result.sql_trace[0]["error"], "no such column: x")
+
+    def test_second_repair_when_the_first_still_fails(self):
+        """
+        第一次修正还报错时再修一次：修好一个错又写出另一个，或者还是同一个错。
+        重放近期 65 条首轮报错各 3 遍，修 1 次跑通 193/195，修 2 次 195/195。
+        """
+        router = self.pipeline.mcp_router
+        original = router.execute
+        calls = []
+
+        def fail_twice(request):
+            calls.append(request)
+            if len(calls) <= 2:
+                return MCPExecutionResult(
+                    database=request["database"], sql=request["sql"],
+                    success=False, error="no such column: x",
+                )
+            return original(request)
+
+        router.execute = fail_twice
+        result = self.run_pipeline()
+
+        kinds = [(entry["kind"], entry["success"]) for entry in result.sql_trace]
+        self.assertEqual(kinds, [("生成", False), ("修正", False), ("修正", True)])
+        repaired = [item for item in result.diagnostics if item.code == Codes.SQL_REPAIRED]
+        self.assertEqual([item.context.get("第几次") for item in repaired], [2])
+
+    def test_repair_budget_defaults_to_two_everywhere(self):
+        """链路和评测器的默认值要一致：评测器单独写死 1，测出来的就不是线上的行为。"""
+        self.assertEqual(PipelineConfig().sql_repair_attempts, 2)
+        self.assertEqual(build_parser().parse_args([]).repair, PipelineConfig().sql_repair_attempts)
 
     def test_self_consistency_keeps_every_attempt(self):
         self.pipeline.config.self_consistency_runs = 3

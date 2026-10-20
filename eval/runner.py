@@ -1143,7 +1143,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="自洽性投票次数，同一问题跑 N 次取多数。1 表示关闭",
     )
     parser.add_argument(
-        "--repair", type=int, default=1,
+        "--repair", type=int, default=PipelineConfig.sql_repair_attempts,
         help="SQL 执行失败时的回调修正次数，0 表示关闭",
     )
     parser.add_argument(
@@ -1234,7 +1234,7 @@ def main() -> None:
 
     if repeat > 1:
         print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
-    if args.self_consistency > 1 or args.repair != 1:
+    if args.self_consistency > 1 or args.repair != PipelineConfig.sql_repair_attempts:
         print(f"配置：自洽性投票 {args.self_consistency} 次，SQL 回调修正 {args.repair} 次")
 
     pipelines = {

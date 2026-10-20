@@ -15,12 +15,16 @@ class PipelineConfig:
     db_path: str | Path = "runtime_data/trade_demo.db"
     sample_size: int = 5
 
-    sql_repair_attempts: int = 1
+    sql_repair_attempts: int = 2
     """
     SQL 执行失败时的回调修正次数，0 表示关闭。
 
     把执行器的报错喂回模型重新生成。原项目 README 标注的
     "暂不包含结果校验与回调修正"，补的就是这一块。
+
+    默认 2 次：第一次修正有时修好一个错、又写出另一个，或者还报同一个错。重放近期运行记录里
+    65 条首轮报错、各 3 遍，修 1 次跑通 193/195，修 2 次 195/195。第二次只在第一次还失败时才调用，
+    这 195 次里用到 2 次。
     """
 
     self_consistency_runs: int = 1
