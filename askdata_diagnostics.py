@@ -125,6 +125,12 @@ class Codes:
     EMPTY_RESULT_SET = "EMPTY_RESULT_SET"
     """SQL 执行成功但返回 0 行，筛选条件可能有问题（例如凭空推断的 ID）。"""
 
+    RESULT_SHAPE_SUSPECT = "RESULT_SHAPE_SUSPECT"
+    """
+    问题只要一个数（"有多少……"），SQL 却返回了好几行：多半是两层聚合压成了一层，外层的计数丢了。
+    已带提示重新生成一次；新结果仍然可疑时保留原结果。判定见 askdata_pipeline/result_shape.py。
+    """
+
     RESULT_TRUNCATED = "RESULT_TRUNCATED"
     """
     结果超过行数上限（PipelineConfig.max_result_rows），只保留了前面那些行。上限比评测库里

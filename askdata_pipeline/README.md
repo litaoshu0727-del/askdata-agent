@@ -33,6 +33,7 @@ print(response.decision.route.value, response.answer)
 | `dynamic_service.py` `routing.py` `data_qa.py` | 统一入口、路由判定、不查库的问答 |
 | `query_rewriter.py` | 指代消解：把"它们"改写成上一轮的具体对象 |
 | `filter_guard.py` | 筛选值守卫：问题提到的枚举取值 SQL 没用上，就带提示重规划 |
+| `result_shape.py` | 结果形状检查：问题只要一个数、结果却有多行（两层聚合压成一层），就带提示重新生成一次 |
 | `conversation_service.py` | 多轮会话编排 |
 | `ecommerce_data.py` `chinook_data.py` `demo_data.py` | 三个数据集的建库与业务元数据 |
 | `local_clients.py` | 无 Key 时的 Mock 关键词抽取与向量 |

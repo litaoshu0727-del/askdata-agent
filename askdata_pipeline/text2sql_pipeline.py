@@ -24,6 +24,7 @@ from sql_generation import (
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
 from .filter_guard import FilterValueGuard
+from .result_shape import single_value_mismatch
 from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
@@ -335,6 +336,33 @@ class AskDataText2SQLPipeline:
                         "SQL 执行失败，修正后仍然失败",
                         报错=str(execution_result.error)[:80],
                     )
+
+            # 问题只要一个数、结果却有好几行：两层聚合压成了一层，SQL 能执行，修正碰不到它。
+            # 只看最后一步——多步规划里中间步骤返回多行是正常的。
+            mismatch = (
+                single_value_mismatch(guard_query, execution_result.columns, len(execution_result.rows or []))
+                if execution_result.success and cot_step is cot_result.steps[-1]
+                else None
+            )
+            if mismatch:
+                emit(
+                    Codes.RESULT_SHAPE_SUSPECT,
+                    "问题只要一个数，结果却有多行，已带提示重新生成一次",
+                    行数=len(execution_result.rows or []),
+                    SQL=" ".join(sql_result.sql.split())[:120],
+                )
+                retry = sql_generator.repair(cot_step=sql_cot_step, failed_sql=sql_result.sql, error=mismatch)
+                retry_request = retry.to_execution_request()
+                retry_result = self.mcp_router.execute(retry_request)
+                trace.append(_trace_entry(
+                    attempt, guard_retry, full_schema, len(step_logs) + 1, "形状修正",
+                    retry.sql, retry_result,
+                ))
+                still = retry_result.success and single_value_mismatch(
+                    guard_query, retry_result.columns, len(retry_result.rows or [])
+                )
+                if retry_result.success and not still:
+                    sql_result, execution_request, execution_result = retry, retry_request, retry_result
 
             # SQL 跑通但一行都没返回，往往不是"确实没有数据"，
             # 而是筛选条件有问题——多轮追问里最常见的就是模型凭空推断了一个 ID。
