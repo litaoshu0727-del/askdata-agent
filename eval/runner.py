@@ -157,7 +157,7 @@ HOLDOUT6_BANKS = {
 }
 
 # 第七套：规范同第六套，验证第六套之后的改动——每组前 N 和窗口函数规则、修正提示的报错分析、
-# 修正最多 2 次、结果形状检查。冻结后还没运行过。
+# 修正最多 2 次、结果形状检查。927e51b 冻结后第一次运行——现在也用过了。
 try:
     from eval.cases_holdout7 import (  # noqa: E402
         HOLDOUT7_CHINOOK_CASES,
@@ -1182,7 +1182,7 @@ def build_parser() -> argparse.ArgumentParser:
             "holdout4 是第四套盲写留出集（ecommerce + Chinook）；"
             "holdout5 是第五套盲写留出集（ecommerce + Chinook）；"
             "holdout6 是第六套，更难的一套（ecommerce + Chinook）；"
-            "holdout7 是第七套，规范同第六套（ecommerce + Chinook，冻结后未运行）；"
+            "holdout7 是第七套，规范同第六套（ecommerce + Chinook）；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1213,7 +1213,7 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6"}:
+    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7"}:
         # 提醒：这几套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
         print(f"⚠️ {args.bank} 已经用过（见 docs/实验记录.md）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
