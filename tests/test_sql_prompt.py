@@ -86,6 +86,16 @@ class SqlPromptRulesTestCase(unittest.TestCase):
                 self.assertIn("外层不再 GROUP BY、不再 SUM", prompt)
                 self.assertIn("不能在同一层的 WHERE、GROUP BY、HAVING 里用", prompt)
 
+    def test_time_difference_rule_in_both_prompts(self):
+        """
+        H7E15："下单后超过一个小时才付款"写成 (julianday(付款) - julianday(下单)) * 24 > 1，正好 1 小时的
+        订单算成 1.0000000074 小时，三个版本 9 次全错。探针上 5/35 → 35/35。
+        """
+        for name, prompt in self.prompts.items():
+            with self.subTest(提示词=name):
+                self.assertIn("strftime('%s', 晚的) - strftime('%s', 早的)", prompt)
+                self.assertIn("不要用 julianday 相减再乘 24 或 1440", prompt)
+
     def test_date_rule_in_both_prompts(self):
         """E44：带时分秒的字段写成 BETWEEN '起始日' AND '结束日'，结束日当天的记录全漏。"""
         for name, prompt in self.prompts.items():

@@ -30,6 +30,9 @@ class SqlPromptBuilder:
       前两位"，CoT 写了组内取前 2，SQL 写成整体排序或全局 LIMIT 2（三个版本 12 次）。模板那段是看着第一版的
       失败加的：模型在原始行上编号、外层再 SUM。第 13 条是第二版之后补的：修好了作用域，又在 WHERE 里写 LAG(...)。
       探针上这几类失败 8 → 1 次（两批 31 道）。
+    - 第 14 条时间差规则来自第七套留出集的 H7E15："下单后超过一个小时才付款"，三个版本 9 次都写成
+      (julianday(付款) - julianday(下单)) * 24 > 1。库里 4 笔正好 1 小时的订单，浮点误差把其中 1 笔算成
+      1.0000000074 小时，PC官网 的占比 56.36% 算成 56.97%。
     - 修正提示的「报错分析」（_error_analysis）也来自第六套：见下。
     """
 
@@ -77,6 +80,9 @@ class SqlPromptBuilder:
     外层不再 GROUP BY、不再 SUM，外层的 SELECT 只用子查询输出的列名。题目说并列的都算时用 RANK() 代替 ROW_NUMBER()。
 13. 窗口函数（LAG、LEAD、ROW_NUMBER、RANK 等）算出来的值，不能在同一层的 WHERE、GROUP BY、HAVING 里用，
     也不能在 WHERE 里引用同一层 SELECT 起的别名：要按它筛选，先在子查询里算好、起别名，再在外层 WHERE 里筛。
+14. 比较两个时间相差多久（超过 1 小时、30 分钟以内、相隔几天）时，用 strftime('%s', 晚的) - strftime('%s', 早的)
+    算出整数秒再比（1 小时 = 3600，1 天 = 86400）。不要用 julianday 相减再乘 24 或 1440 去和整数比：那是浮点数，
+    正好 1 小时会算成 0.9999999 或 1.0000001，边界上的记录被分错。
 
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}
@@ -177,6 +183,9 @@ class SqlPromptBuilder:
    外层不再 GROUP BY、不再 SUM，外层的 SELECT 只用子查询输出的列名。题目说并列的都算时用 RANK() 代替 ROW_NUMBER()。
 11. 窗口函数（LAG、LEAD、ROW_NUMBER、RANK 等）算出来的值，不能在同一层的 WHERE、GROUP BY、HAVING 里用，
    也不能在 WHERE 里引用同一层 SELECT 起的别名：要按它筛选，先在子查询里算好、起别名，再在外层 WHERE 里筛。
+12. 比较两个时间相差多久（超过 1 小时、30 分钟以内、相隔几天）时，用 strftime('%s', 晚的) - strftime('%s', 早的)
+   算出整数秒再比（1 小时 = 3600，1 天 = 86400）。不要用 julianday 相减再乘 24 或 1440 去和整数比：那是浮点数，
+   正好 1 小时会算成 0.9999999 或 1.0000001，边界上的记录被分错。
 
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}

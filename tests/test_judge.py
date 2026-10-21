@@ -19,6 +19,7 @@ from askdata_pipeline.objects import PipelineResult, StepExecutionLog  # noqa: E
 from eval.cases import EvalCase  # noqa: E402
 from eval.runner import (  # noqa: E402
     case_ndigits,
+    extra_columns_match,
     normalize_rows,
     normalize_value,
     parse_hit_columns,
@@ -171,6 +172,59 @@ class RunCasePrecisionTest(unittest.TestCase):
 
     def test_default_two_digits(self):
         self.assertEqual(self.judge("转化率是多少", [{"rate": 0.1199}]), "pass")
+
+
+class ExtraColumnsTest(unittest.TestCase):
+    """
+    多返回的列不算错：期望的列都在、行数一样、挑出同一组列能逐行对上。
+
+    H7E17 问"差几单"，模型把两段各自的订单数也一起返回，差值 9 次全对，原先全判错。
+    """
+
+    EXPECTED = [{"channel": "APP", "diff": -8}, {"channel": "PC官网", "diff": 20}]
+
+    def test_extra_columns_with_matching_values(self):
+        actual = [
+            {"channel": "APP", "前段": 76, "后段": 68, "差值": -8},
+            {"channel": "PC官网", "前段": 52, "后段": 72, "差值": 20},
+        ]
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, False), 2)
+
+    def test_wrong_values_still_fail(self):
+        actual = [{"channel": "APP", "前段": 76, "差值": -7}, {"channel": "PC官网", "前段": 52, "差值": 20}]
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, False), -1)
+
+    def test_row_count_must_match(self):
+        actual = [{"channel": "APP", "x": 1, "diff": -8}]
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, False), -1)
+
+    def test_columns_are_chosen_once_for_all_rows(self):
+        """每行各凑各的不行：第一行的 -8 在 a 列，第二行的 20 在 b 列，没有一组列能同时对上。"""
+        actual = [{"channel": "APP", "a": -8, "b": 0}, {"channel": "PC官网", "a": 0, "b": 20}]
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, False), -1)
+
+    def test_same_or_fewer_columns_are_not_widened(self):
+        self.assertEqual(extra_columns_match([{"channel": "APP", "diff": -7}, {"channel": "PC官网", "diff": 20}], self.EXPECTED, False), -1)
+        self.assertEqual(extra_columns_match([{"diff": -8}, {"diff": 20}], self.EXPECTED, False), -1)
+
+    def test_order_is_respected_when_ordered(self):
+        actual = [
+            {"channel": "PC官网", "x": 0, "diff": 20},
+            {"channel": "APP", "x": 0, "diff": -8},
+        ]
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, False), 1)
+        self.assertEqual(extra_columns_match(actual, self.EXPECTED, True), -1)
+
+    def test_run_case_passes_and_marks_extra_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "empty.db"
+            sqlite3.connect(str(db)).close()
+            item = EvalCase(id="T", query="差几单", reference_sql="SELECT 'APP' AS channel, -8 AS diff")
+            outcome = run_case(_FixedAnswerPipeline([{"channel": "APP", "前段": 76, "后段": 68, "diff": -8}]), db, item)
+            exact = run_case(_FixedAnswerPipeline([{"channel": "APP", "diff": -8}]), db, item)
+        self.assertEqual((outcome.status, outcome.extra_columns), ("pass", 2))
+        self.assertIn("多返回了 2 列", outcome.detail)
+        self.assertEqual((exact.status, exact.extra_columns), ("pass", 0))
 
 
 class RecallScoringTest(unittest.TestCase):

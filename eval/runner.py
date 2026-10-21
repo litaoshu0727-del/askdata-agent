@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
 import math
@@ -235,6 +236,7 @@ class RunRecorder:
             "generated_sql": outcome.generated_sql,
             "missed_columns": outcome.missed_columns,
             "first_pass_missed": outcome.first_pass_missed,
+            "extra_columns": outcome.extra_columns,
             **outcome.trace,
         }
         self._file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -355,6 +357,9 @@ class CaseOutcome:
     attempts: int = 1
     """实际尝试次数。超时等瞬时故障会重试。"""
 
+    extra_columns: int = 0
+    """结果比期望多出的列数；大于 0 表示是放宽判分后才算对的，严格口径要扣掉。"""
+
     @property
     def schema_recall(self) -> float:
         total = len(self.case.must_hit_columns)
@@ -435,6 +440,43 @@ def normalize_rows(
     """
     normalized = [tuple(sorted(normalize_value(v, ndigits) for v in row.values())) for row in rows]
     return normalized if ordered else sorted(normalized)
+
+
+MAX_EXTRA_COLUMN_COMBINATIONS = 5000
+
+
+def extra_columns_match(
+    actual: Sequence[Dict[str, Any]],
+    expected: Sequence[Dict[str, Any]],
+    ordered: bool,
+    ndigits: int = FLOAT_NDIGITS,
+) -> int:
+    """
+    实际结果比期望多出几列、但能挑出一组列和期望逐行对上时，返回多出的列数；对不上返回 -1。
+
+    第七套的 H7E17 问"差几单"，模型把两段各自的订单数也一起返回，差值 9 次全对，判分按值比对全判错。
+    多给的列对用户没有坏处，判错它测的是格式不是能力，判分从这里放宽。挑列对所有行一致（同一组位置），
+    不允许每行各凑各的；行数必须相同。严格口径的分数要扣掉这些：结果里带 extra_columns。
+    """
+    if not actual or len(actual) != len(expected):
+        return -1
+
+    columns = list(actual[0].keys())
+    width = len(expected[0]) if expected else 0
+    extra = len(columns) - width
+    if extra <= 0 or width == 0:
+        return -1
+
+    if math.comb(len(columns), width) > MAX_EXTRA_COLUMN_COMBINATIONS:
+        return -1
+
+    target = normalize_rows(expected, ordered, ndigits)
+    for chosen in itertools.combinations(columns, width):
+        projected = [{name: row.get(name) for name in chosen} for row in actual]
+        if normalize_rows(projected, ordered, ndigits) == target:
+            return extra
+
+    return -1
 
 
 def parse_hit_columns(schema_context: str) -> Set[str]:
@@ -598,6 +640,16 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
 
     if normalize_rows(actual, case.ordered, ndigits) == normalize_rows(expected, case.ordered, ndigits):
         return CaseOutcome(status="pass", generated_sql=generated_sql, **base)
+
+    extra = extra_columns_match(actual, expected, case.ordered, ndigits)
+    if extra > 0:
+        return CaseOutcome(
+            status="pass",
+            generated_sql=generated_sql,
+            detail=f"多返回了 {extra} 列，期望的列都对上了（放宽判分算对）",
+            extra_columns=extra,
+            **base,
+        )
 
     return CaseOutcome(
         status="wrong_result",
@@ -884,6 +936,12 @@ def report(aggregates: List[CaseAggregate]) -> None:
     print(f"  端到端准确率     {passed}/{total}"
           f"　{passed / total:.0%}　"
           f"（整条链路，含陷阱题）")
+
+    widened = sum(1 for item in outcomes for o in item.outcomes if o.extra_columns > 0)
+    if widened:
+        all_runs = sum(item.runs for item in outcomes)
+        print(f"  多返回了列       {widened}/{all_runs} 次运行"
+              f"　（期望的列都对上了，放宽判分算对；严格口径要扣掉）")
 
     if repeat > 1:
         per_run = [

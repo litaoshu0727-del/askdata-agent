@@ -16,9 +16,13 @@
     探针:每组前N二   R01–R05       措辞定了以后才写
                      W01–W04       窗口筛选
                      L03–L04       对照
+    探针:时间差      D01–D04       时间差正好落在 1 小时、30 分钟上，julianday 的浮点误差会分错（第七套之后）
+                     Y01–Y02       对照：按整天比较，julianday 本来就准
+    探针:时间差二    D05–D07       措辞定了以后才写
+                     Y03           对照
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
-`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断。窗口筛选的题
+`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440。窗口筛选的题
 没有错误写法：它们的失败是 SQL 报错（外层看不到内层的列、WHERE 里用了窗口函数）。tests/test_probes.py 检查错误写法
 的答案和参考答案确实不同——否则这道探针区分不出规则有没有起作用。对照题没有错误写法，
 它们用来确认规则没把模型带偏。
@@ -27,7 +31,7 @@
     python -m eval.runner --bank probes --dataset chinook --repeat 3
 
 整数除法两批原先只存在临时目录里，被系统清理了，从当时的会话记录里原样找回。
-结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」。
+结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」。
 """
 
 from eval.cases import EvalCase
@@ -1298,13 +1302,184 @@ TOPN_WRONG_SQL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 时间差（第七套留出集之后）。运行记录里对照题的题号是 E01–E03，收进来时改成 Y01–Y03（E 和主题库撞号）。
+# ---------------------------------------------------------------------------
+
+_TIME_DIFF_ECOMMERCE = [
+    EvalCase(
+        id="D01",
+        query="下单后超过 1 小时才付款的订单有多少笔？正好 1 小时的不算。",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL AND strftime('%s', pay_time) - strftime('%s', create_time) > 3600"
+        ),
+        must_hit_columns=["fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差"],
+    ),
+    EvalCase(
+        id="D02",
+        query="下单后 1 小时以内付款的订单有多少笔？正好 1 小时的也算。",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL AND strftime('%s', pay_time) - strftime('%s', create_time) <= 3600"
+        ),
+        must_hit_columns=["fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差"],
+    ),
+    EvalCase(
+        id="D03",
+        query="按支付渠道看，下单后超过 30 分钟才完成支付的支付记录各有多少笔？正好 30 分钟的不算。列出支付渠道和笔数。",
+        reference_sql=(
+            "SELECT p.pay_channel, COUNT(*)"
+            " FROM fact_payment p"
+            " JOIN fact_order o ON o.order_id = p.order_id"
+            " WHERE p.pay_time IS NOT NULL AND strftime('%s', p.pay_time) - strftime('%s', o.create_time) > 1800"
+            " GROUP BY p.pay_channel"
+        ),
+        must_hit_columns=["fact_payment.pay_channel", "fact_payment.pay_time", "fact_order.create_time"],
+        tags=["探针:时间差"],
+    ),
+    EvalCase(
+        id="D04",
+        query="下单后不到 30 分钟就付款的订单，按下单渠道各有多少笔？正好 30 分钟的不算在内。列出下单渠道和笔数。",
+        reference_sql=(
+            "SELECT channel, COUNT(*)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL AND strftime('%s', pay_time) - strftime('%s', create_time) < 1800"
+            " GROUP BY channel"
+        ),
+        must_hit_columns=["fact_order.channel", "fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差"],
+    ),
+    EvalCase(
+        id="Y01",
+        query="付款之后超过 3 天才完成的订单有多少笔？正好 3 天的不算。",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM fact_order"
+            " WHERE finish_time IS NOT NULL AND pay_time IS NOT NULL AND strftime('%s', finish_time) - strftime('%s', pay_time) > 3 * 86400"
+        ),
+        must_hit_columns=["fact_order.pay_time", "fact_order.finish_time"],
+        tags=["探针:时间差", "对照"],
+    ),
+    EvalCase(
+        id="Y02",
+        query="申请退款后 3 天以内（正好 3 天也算）就办结的退款有多少笔？",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM fact_refund"
+            " WHERE finish_time IS NOT NULL AND strftime('%s', finish_time) - strftime('%s', apply_time) <= 3 * 86400"
+        ),
+        must_hit_columns=["fact_refund.apply_time", "fact_refund.finish_time"],
+        tags=["探针:时间差", "对照"],
+    ),
+    EvalCase(
+        id="D05",
+        query="按店铺类型看，已付款的订单里下单后 1 小时以上才付款的占百分之几？正好 1 小时的不算 1 小时以上。结果写成百分数的数值，保留两位小数。列出店铺类型和占比。",
+        reference_sql=(
+            "SELECT s.shop_type, ROUND(100.0 * SUM(strftime('%s', o.pay_time) - strftime('%s', o.create_time) > 3600) / COUNT(*), 2)"
+            " FROM fact_order o"
+            " JOIN dim_shop s ON s.shop_id = o.shop_id"
+            " WHERE o.pay_time IS NOT NULL"
+            " GROUP BY s.shop_type"
+        ),
+        must_hit_columns=["dim_shop.shop_type", "fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差二"],
+    ),
+    EvalCase(
+        id="D06",
+        query="下单后 30 分钟到 1 小时之间付款的订单有多少笔？30 分钟和 1 小时两头都算。",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL AND strftime('%s', pay_time) - strftime('%s', create_time) BETWEEN 1800 AND 3600"
+        ),
+        must_hit_columns=["fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差二"],
+    ),
+    EvalCase(
+        id="D07",
+        query="按会员等级分，有多少位用户至少有一笔订单是下单后 30 分钟以内（正好 30 分钟也算）就付了款的？列出会员等级和用户数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(DISTINCT o.user_id)"
+            " FROM fact_order o"
+            " JOIN dim_user u ON u.user_id = o.user_id"
+            " WHERE o.pay_time IS NOT NULL AND strftime('%s', o.pay_time) - strftime('%s', o.create_time) <= 1800"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level", "fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差二"],
+    ),
+    EvalCase(
+        id="Y03",
+        query="已付款的订单，从下单到付款平均隔了多少分钟？保留一位小数。",
+        reference_sql=(
+            "SELECT ROUND(AVG((strftime('%s', pay_time) - strftime('%s', create_time)) / 60.0), 1)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL"
+        ),
+        must_hit_columns=["fact_order.create_time", "fact_order.pay_time"],
+        tags=["探针:时间差二", "对照"],
+    ),
+]
+
+TIME_DIFF_WRONG_SQL = {
+    "D01": (
+        "SELECT COUNT(*)"
+        " FROM fact_order"
+        " WHERE pay_time IS NOT NULL AND (julianday(pay_time) - julianday(create_time)) * 24 > 1"
+    ),
+    "D02": (
+        "SELECT COUNT(*)"
+        " FROM fact_order"
+        " WHERE pay_time IS NOT NULL AND (julianday(pay_time) - julianday(create_time)) * 24 <= 1"
+    ),
+    "D03": (
+        "SELECT p.pay_channel, COUNT(*)"
+        " FROM fact_payment p"
+        " JOIN fact_order o ON o.order_id = p.order_id"
+        " WHERE p.pay_time IS NOT NULL AND (julianday(p.pay_time) - julianday(o.create_time)) * 1440 > 30"
+        " GROUP BY p.pay_channel"
+    ),
+    "D04": (
+        "SELECT channel, COUNT(*)"
+        " FROM fact_order"
+        " WHERE pay_time IS NOT NULL AND (julianday(pay_time) - julianday(create_time)) * 1440 < 30"
+        " GROUP BY channel"
+    ),
+    "D05": (
+        "SELECT s.shop_type, ROUND(100.0 * SUM((julianday(o.pay_time) - julianday(o.create_time)) * 24 > 1) / COUNT(*), 2)"
+        " FROM fact_order o"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " WHERE o.pay_time IS NOT NULL"
+        " GROUP BY s.shop_type"
+    ),
+    "D06": (
+        "SELECT COUNT(*)"
+        " FROM fact_order"
+        " WHERE pay_time IS NOT NULL AND (julianday(pay_time) - julianday(create_time)) * 1440 BETWEEN 30 AND 60"
+    ),
+    "D07": (
+        "SELECT u.member_level, COUNT(DISTINCT o.user_id)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " WHERE o.pay_time IS NOT NULL AND (julianday(o.pay_time) - julianday(o.create_time)) * 1440 <= 30"
+        " GROUP BY u.member_level"
+    ),
+}
+
+
 WRONG_SQL = {
     **{case.id: _integer_division(case.reference_sql) for case in _INT_DIV_ECOMMERCE + _INT_DIV_CHINOOK},
     **FAN_OUT_SQL,
     **TOPN_WRONG_SQL,
+    **TIME_DIFF_WRONG_SQL,
 }
 
 PROBE_BANKS = {
-    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE,
+    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE,
     "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK,
 }
