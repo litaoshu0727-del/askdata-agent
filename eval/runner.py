@@ -190,7 +190,7 @@ HOLDOUT8_BANKS = {
 }
 
 # 第九套：Sakila，第三个库，验证泛化。元数据在出题之前写好提交；三组对照（完整、无元数据、无规则）。
-# 冻结后还没运行过。
+# 951bfe9 冻结后第一次运行——现在也用过了。
 try:
     from eval.cases_holdout9 import HOLDOUT9_SAKILA_CASES  # noqa: E402
 except ImportError:
@@ -1290,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
             "holdout6 是第六套，更难的一套（ecommerce + Chinook）；"
             "holdout7 是第七套，规范同第六套（ecommerce + Chinook）；"
             "holdout8 是第八套，题面可以靠口径约定（ecommerce + Chinook）；"
-            "holdout9 是第九套，Sakila，验证泛化（冻结后未运行）；"
+            "holdout9 是第九套，Sakila，验证泛化；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1321,7 +1321,7 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8"}:
+    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "holdout9"}:
         # 提醒：这几套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
         print(f"⚠️ {args.bank} 已经用过（见 docs/实验记录.md）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
