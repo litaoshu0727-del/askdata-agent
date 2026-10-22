@@ -62,5 +62,37 @@ class OrderStructureClaimsTest(unittest.TestCase):
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM (SELECT order_id FROM fact_refund GROUP BY order_id HAVING COUNT(*) > 1)"), 0)
 
 
+
+class DefaultDefinitionTest(unittest.TestCase):
+    """
+    题目没写订单状态时的默认口径（2026-10-22 定）："买过、已付款、实付、花了多少、消费"只算已付款的订单，即 pay_time
+    不为空；"订单数"不加条件。模型原先常把"已付款"写成 order_status = '已支付'，把已完成、已退款的订单漏掉。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.conn = sqlite3.connect(str(create_ecommerce_demo_database(Path(cls._tmp.name) / "ecommerce.db")))
+        cls.meta = get_ecommerce_business_meta()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls._tmp.cleanup()
+
+    def test_the_convention_is_in_the_metadata(self):
+        self.assertIn("口径约定（题目没写订单状态时）", self.meta["fact_order"]["description"])
+        self.assertIn("不等于「已付款」", self.meta["fact_order"]["columns"]["order_status"]["description"])
+        self.assertIn("判断「已付款」就用它", self.meta["fact_order"]["columns"]["pay_time"]["description"])
+
+    def test_pay_time_matches_the_paid_statuses(self):
+        """元数据说"pay_time 不为空 = 已支付、已完成、已退款"：改了建库代码这句就可能变成假话。"""
+        rows = dict(self.conn.execute(
+            "SELECT order_status, SUM(pay_time IS NOT NULL) * 1.0 / COUNT(*) FROM fact_order GROUP BY order_status"
+        ).fetchall())
+        self.assertEqual({k for k, v in rows.items() if v == 1.0}, {"已支付", "已完成", "已退款"})
+        self.assertEqual({k for k, v in rows.items() if v == 0.0}, {"待支付", "已取消"})
+
+
 if __name__ == "__main__":
     unittest.main()

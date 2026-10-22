@@ -25,6 +25,13 @@
                      UC1、VC1      对照
     探针:唯一与挂单二 U08–U10、V04–V06  措辞定了以后才写
                      UC2、VC2      对照
+    探针:口径        J01–J04       题目没写订单状态时的默认口径（只算已付款的订单）
+                     JC1–JC2       对照：不带修饰的订单数不加条件；点名状态的按题面
+    探针:口径二      J05–J08       口径写进元数据之后才写
+                     JC3–JC5       对照
+
+口径定下来时，F03、F04、F06、G02、G05、M01、K01、K05、L01、K11 的参考答案（和错误写法）改成了只算已付款的订单：
+它们原先默认算全部订单，和定下的口径不一致。改之前的版本留在 git 历史里，之前记录的这几道题的分数是按旧参考答案量的。
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
 `* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440；全都是同一个 X 的是把 X 也放进 GROUP BY；挂单的是直接连明细再 SUM。窗口筛选的题
@@ -273,7 +280,7 @@ _FAN_OUT_ECOMMERCE = [
         query="包含「手机通讯」类商品的订单，按下单渠道统计订单笔数和实付金额合计（保留两位小数）。返回下单渠道、订单笔数、实付金额合计。",
         reference_sql=(
             "SELECT channel, COUNT(*), ROUND(SUM(pay_amount), 2)"
-            " FROM fact_order"
+            " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order"
             " WHERE order_id IN (SELECT i.order_id FROM fact_order_item i JOIN dim_product p ON i.product_id = p.product_id JOIN dim_category c ON p.category_id = c.category_id WHERE c.category_name = '手机通讯')"
             " GROUP BY channel"
         ),
@@ -286,7 +293,7 @@ _FAN_OUT_ECOMMERCE = [
         reference_sql=(
             "SELECT u.member_level, COUNT(*)"
             " FROM dim_user u"
-            " WHERE u.user_id IN (SELECT o.user_id FROM fact_order o JOIN fact_order_item i ON o.order_id = i.order_id JOIN dim_product p ON i.product_id = p.product_id JOIN dim_category c ON p.category_id = c.category_id WHERE c.category_name = '休闲零食')"
+            " WHERE u.user_id IN (SELECT o.user_id FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o JOIN fact_order_item i ON o.order_id = i.order_id JOIN dim_product p ON i.product_id = p.product_id JOIN dim_category c ON p.category_id = c.category_id WHERE c.category_name = '休闲零食')"
             " GROUP BY u.member_level"
         ),
         must_hit_columns=["dim_category.category_name", "dim_user.member_level"],
@@ -309,8 +316,8 @@ _FAN_OUT_ECOMMERCE = [
         id="F06",
         query="按下单渠道统计订单实付金额合计和售出的商品件数合计（金额保留两位小数）。返回下单渠道、实付金额合计、商品件数。",
         reference_sql=(
-            "SELECT o.channel, ROUND(SUM(o.pay_amount), 2), (SELECT SUM(i.quantity) FROM fact_order_item i JOIN fact_order o2 ON i.order_id = o2.order_id WHERE o2.channel = o.channel)"
-            " FROM fact_order o"
+            "SELECT o.channel, ROUND(SUM(o.pay_amount), 2), (SELECT SUM(i.quantity) FROM fact_order_item i JOIN (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o2 ON i.order_id = o2.order_id WHERE o2.channel = o.channel)"
+            " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
             " GROUP BY o.channel"
         ),
         must_hit_columns=["fact_order.channel", "fact_order.pay_amount", "fact_order_item.quantity"],
@@ -362,7 +369,7 @@ _FAN_OUT_ECOMMERCE = [
         reference_sql=(
             "SELECT gender, COUNT(*)"
             " FROM dim_user"
-            " WHERE user_id IN (SELECT user_id FROM fact_order WHERE pay_amount > 3000 GROUP BY user_id HAVING COUNT(*) >= 5)"
+            " WHERE user_id IN (SELECT user_id FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order WHERE pay_amount > 3000 GROUP BY user_id HAVING COUNT(*) >= 5)"
             " GROUP BY gender"
         ),
         must_hit_columns=["dim_user.gender", "fact_order.pay_amount"],
@@ -396,7 +403,7 @@ _FAN_OUT_ECOMMERCE = [
         reference_sql=(
             "SELECT u.member_level, ROUND(SUM(o.pay_amount), 2), SUM(q.qty)"
             " FROM dim_user u"
-            " JOIN fact_order o ON u.user_id = o.user_id"
+            " JOIN (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o ON u.user_id = o.user_id"
             " JOIN (SELECT order_id, SUM(quantity) AS qty FROM fact_order_item GROUP BY order_id) q ON o.order_id = q.order_id"
             " GROUP BY u.member_level"
         ),
@@ -408,7 +415,7 @@ _FAN_OUT_ECOMMERCE = [
         query="按店铺所在城市统计订单实付金额合计（保留两位小数）。返回城市和金额合计。",
         reference_sql=(
             "SELECT s.city, ROUND(SUM(o.pay_amount), 2)"
-            " FROM fact_order o"
+            " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
             " JOIN dim_shop s ON o.shop_id = s.shop_id"
             " GROUP BY s.city"
         ),
@@ -624,7 +631,7 @@ FAN_OUT_SQL = {
     ),
     "F03": (
         "SELECT o.channel, COUNT(*), ROUND(SUM(o.pay_amount), 2)"
-        " FROM fact_order o"
+        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
         " JOIN fact_order_item i ON o.order_id = i.order_id"
         " JOIN dim_product p ON i.product_id = p.product_id"
         " JOIN dim_category c ON p.category_id = c.category_id"
@@ -634,7 +641,7 @@ FAN_OUT_SQL = {
     "F04": (
         "SELECT u.member_level, COUNT(*)"
         " FROM dim_user u"
-        " JOIN fact_order o ON u.user_id = o.user_id"
+        " JOIN (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o ON u.user_id = o.user_id"
         " JOIN fact_order_item i ON o.order_id = i.order_id"
         " JOIN dim_product p ON i.product_id = p.product_id"
         " JOIN dim_category c ON p.category_id = c.category_id"
@@ -650,7 +657,7 @@ FAN_OUT_SQL = {
     ),
     "F06": (
         "SELECT o.channel, ROUND(SUM(o.pay_amount), 2), SUM(i.quantity)"
-        " FROM fact_order o"
+        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
         " JOIN fact_order_item i ON o.order_id = i.order_id"
         " GROUP BY o.channel"
     ),
@@ -710,8 +717,8 @@ FAN_OUT_SQL = {
     "G02": (
         "SELECT u.gender, COUNT(*)"
         " FROM dim_user u"
-        " JOIN fact_order o ON u.user_id = o.user_id"
-        " WHERE o.pay_amount > 3000 AND u.user_id IN (SELECT user_id FROM fact_order WHERE pay_amount > 3000 GROUP BY user_id HAVING COUNT(*) >= 5)"
+        " JOIN (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o ON u.user_id = o.user_id"
+        " WHERE o.pay_amount > 3000 AND u.user_id IN (SELECT user_id FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order WHERE pay_amount > 3000 GROUP BY user_id HAVING COUNT(*) >= 5)"
         " GROUP BY u.gender"
     ),
     "G03": (
@@ -732,7 +739,7 @@ FAN_OUT_SQL = {
     "G05": (
         "SELECT u.member_level, ROUND(SUM(o.pay_amount), 2), SUM(i.quantity)"
         " FROM dim_user u"
-        " JOIN fact_order o ON u.user_id = o.user_id"
+        " JOIN (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o ON u.user_id = o.user_id"
         " JOIN fact_order_item i ON o.order_id = i.order_id"
         " GROUP BY u.member_level"
     ),
@@ -786,12 +793,12 @@ _TOPN_ECOMMERCE = [
         query="每个城市里，累计实付金额最高的 2 位用户是谁？按用户所在城市分，列出城市、用户编号和实付金额合计（保留两位小数）。",
         reference_sql=(
             "SELECT city, user_id, amt"
-            " FROM (SELECT u.city, o.user_id, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.city ORDER BY SUM(o.pay_amount) DESC) AS rn FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id GROUP BY u.city, o.user_id)"
+            " FROM (SELECT u.city, o.user_id, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.city ORDER BY SUM(o.pay_amount) DESC) AS rn FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o JOIN dim_user u ON u.user_id = o.user_id GROUP BY u.city, o.user_id)"
             " WHERE rn <= 2"
         ),
         must_hit_columns=["dim_user.city", "fact_order.pay_amount"],
         tags=["探针:每组前N"],
-        note="【存疑】题面的「累计实付金额」正好是用户汇总表 total_pay_amount 的中文名，模型三个版本都用了汇总表，和按订单表汇总的参考答案不同。原样保留，不计入规则的归因。",
+        note="口径定下来（实付、消费默认只算已付款的订单）之后改了参考答案。原先按全部订单算，模型三个版本都用用户汇总表的 total_pay_amount、被判错——那个字段正好是已付款订单的合计，模型是对的，错的是参考答案。",
     ),
     EvalCase(
         id="K02",
@@ -831,7 +838,7 @@ _TOPN_ECOMMERCE = [
         query="每个下单渠道里，实付金额最高的 2 笔订单是哪几笔？列出下单渠道、订单编号和实付金额。",
         reference_sql=(
             "SELECT channel, order_id, pay_amount"
-            " FROM (SELECT channel, order_id, pay_amount, ROW_NUMBER() OVER (PARTITION BY channel ORDER BY pay_amount DESC) AS rn FROM fact_order)"
+            " FROM (SELECT channel, order_id, pay_amount, ROW_NUMBER() OVER (PARTITION BY channel ORDER BY pay_amount DESC) AS rn FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order)"
             " WHERE rn <= 2"
         ),
         must_hit_columns=["fact_order.channel", "fact_order.pay_amount"],
@@ -842,7 +849,7 @@ _TOPN_ECOMMERCE = [
         query="累计实付金额最高的 5 位用户是谁？按订单表算，列出用户编号和实付金额合计（保留两位小数）。",
         reference_sql=(
             "SELECT user_id, ROUND(SUM(pay_amount), 2)"
-            " FROM fact_order"
+            " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order"
             " GROUP BY user_id"
             " ORDER BY SUM(pay_amount) DESC LIMIT 5"
         ),
@@ -877,7 +884,7 @@ _TOPN_ECOMMERCE = [
         query="按用户所在省份分，每个省份的用户在哪 2 家店铺花的实付金额最多？列出省份、店铺名称和实付金额合计（保留两位小数）。",
         reference_sql=(
             "SELECT province, shop_name, amt"
-            " FROM (SELECT u.province, s.shop_name, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.province ORDER BY SUM(o.pay_amount) DESC) AS rn FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY u.province, s.shop_id, s.shop_name)"
+            " FROM (SELECT u.province, s.shop_name, ROUND(SUM(o.pay_amount), 2) AS amt, ROW_NUMBER() OVER (PARTITION BY u.province ORDER BY SUM(o.pay_amount) DESC) AS rn FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop s ON s.shop_id = o.shop_id GROUP BY u.province, s.shop_id, s.shop_name)"
             " WHERE rn <= 2"
         ),
         must_hit_columns=["dim_user.province", "dim_shop.shop_name", "fact_order.pay_amount"],
@@ -1145,7 +1152,7 @@ _TOPN_CHINOOK = [
 TOPN_WRONG_SQL = {
     "K01": (
         "SELECT u.city, o.user_id, ROUND(SUM(o.pay_amount), 2)"
-        " FROM fact_order o"
+        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
         " JOIN dim_user u ON u.user_id = o.user_id"
         " GROUP BY u.city, o.user_id"
         " ORDER BY u.city, SUM(o.pay_amount) DESC"
@@ -1170,7 +1177,7 @@ TOPN_WRONG_SQL = {
     ),
     "K05": (
         "SELECT channel, order_id, pay_amount"
-        " FROM fact_order"
+        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order"
         " ORDER BY pay_amount DESC LIMIT 2"
     ),
     "K06": (
@@ -1211,7 +1218,7 @@ TOPN_WRONG_SQL = {
     ),
     "K11": (
         "SELECT u.province, s.shop_name, ROUND(SUM(o.pay_amount), 2)"
-        " FROM fact_order o"
+        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
         " JOIN dim_user u ON u.user_id = o.user_id"
         " JOIN dim_shop s ON s.shop_id = o.shop_id"
         " GROUP BY u.province, s.shop_id"
@@ -1876,15 +1883,216 @@ UNIQ_WRONG_SQL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 口径（2026-10-22 定）：题目没写订单状态时，"买过、已付款、实付、花了多少、消费"只算已付款的订单（pay_time 不为空），
+# "订单数"不加条件。WRONG_SQL 是模型常写的错法：不加条件，或者写成 order_status = '已支付'。
+# ---------------------------------------------------------------------------
+
+_KOUJING_ECOMMERCE = [
+    EvalCase(
+        id="J01",
+        query="买过「数码电器」类商品的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT o.user_id)"
+            " FROM fact_order o"
+            " JOIN fact_order_item i ON i.order_id = o.order_id"
+            " JOIN dim_product p ON p.product_id = i.product_id"
+            " JOIN dim_category c ON c.category_id = p.category_id"
+            " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+            " WHERE o.pay_time IS NOT NULL AND pc.category_name = '数码电器'"
+        ),
+        must_hit_columns=["fact_order.pay_time", "dim_category.category_name"],
+        tags=["探针:口径"],
+    ),
+    EvalCase(
+        id="J02",
+        query="已付款的订单，按下单渠道分各有多少笔？列出下单渠道和笔数。",
+        reference_sql="SELECT channel, COUNT(*) FROM fact_order WHERE pay_time IS NOT NULL GROUP BY channel",
+        must_hit_columns=["fact_order.pay_time", "fact_order.channel"],
+        tags=["探针:口径"],
+    ),
+    EvalCase(
+        id="J03",
+        query="每个城市的用户一共花了多少钱？按用户所在城市分，列出城市和金额，保留两位小数。",
+        reference_sql=(
+            "SELECT u.city, ROUND(SUM(o.pay_amount), 2)"
+            " FROM fact_order o"
+            " JOIN dim_user u ON u.user_id = o.user_id"
+            " WHERE o.pay_time IS NOT NULL"
+            " GROUP BY u.city"
+        ),
+        must_hit_columns=["dim_user.city", "fact_order.pay_amount"],
+        tags=["探针:口径"],
+    ),
+    EvalCase(
+        id="J04",
+        query="按订单表算，消费金额最高的 3 位用户是谁？列出用户编号和消费金额（保留两位小数）。",
+        reference_sql=(
+            "SELECT user_id, ROUND(SUM(pay_amount), 2)"
+            " FROM fact_order"
+            " WHERE pay_time IS NOT NULL"
+            " GROUP BY user_id"
+            " ORDER BY SUM(pay_amount) DESC LIMIT 3"
+        ),
+        must_hit_columns=["fact_order.pay_amount"],
+        tags=["探针:口径"],
+    ),
+    EvalCase(
+        id="JC1",
+        query="每个下单渠道各有多少笔订单？列出下单渠道和订单数。",
+        reference_sql="SELECT channel, COUNT(*) FROM fact_order GROUP BY channel",
+        must_hit_columns=["fact_order.channel"],
+        tags=["探针:口径", "对照"],
+    ),
+    EvalCase(
+        id="JC2",
+        query="订单状态为「已支付」的订单，按下单渠道各有多少笔？列出下单渠道和笔数。",
+        reference_sql="SELECT channel, COUNT(*) FROM fact_order WHERE order_status = '已支付' GROUP BY channel",
+        must_hit_columns=["fact_order.order_status", "fact_order.channel"],
+        tags=["探针:口径", "对照"],
+    ),
+    EvalCase(
+        id="J05",
+        query="付过钱的用户，按会员等级各有多少位？列出会员等级和用户数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(DISTINCT o.user_id)"
+            " FROM fact_order o"
+            " JOIN dim_user u ON u.user_id = o.user_id"
+            " WHERE o.pay_time IS NOT NULL"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level", "fact_order.pay_time"],
+        tags=["探针:口径二"],
+    ),
+    EvalCase(
+        id="J06",
+        query="购买过「彩妆香水」类商品的订单有多少笔？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT o.order_id)"
+            " FROM fact_order o"
+            " JOIN fact_order_item i ON i.order_id = o.order_id"
+            " JOIN dim_product p ON p.product_id = i.product_id"
+            " JOIN dim_category c ON c.category_id = p.category_id"
+            " WHERE o.pay_time IS NOT NULL AND c.category_name = '彩妆香水'"
+        ),
+        must_hit_columns=["fact_order.pay_time", "dim_category.category_name"],
+        tags=["探针:口径二"],
+    ),
+    EvalCase(
+        id="J07",
+        query="按店铺类型看，订单的实付金额合计各是多少？列出店铺类型和金额，保留两位小数。",
+        reference_sql=(
+            "SELECT s.shop_type, ROUND(SUM(o.pay_amount), 2)"
+            " FROM fact_order o"
+            " JOIN dim_shop s ON s.shop_id = o.shop_id"
+            " WHERE o.pay_time IS NOT NULL"
+            " GROUP BY s.shop_type"
+        ),
+        must_hit_columns=["dim_shop.shop_type", "fact_order.pay_amount"],
+        tags=["探针:口径二"],
+    ),
+    EvalCase(
+        id="J08",
+        query="已付款订单的平均实付金额是多少？保留两位小数。",
+        reference_sql="SELECT ROUND(AVG(pay_amount), 2) FROM fact_order WHERE pay_time IS NOT NULL",
+        must_hit_columns=["fact_order.pay_amount", "fact_order.pay_time"],
+        tags=["探针:口径二"],
+    ),
+    EvalCase(
+        id="JC3",
+        query="按会员等级，下单笔数各是多少？列出会员等级和笔数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(*)"
+            " FROM fact_order o"
+            " JOIN dim_user u ON u.user_id = o.user_id"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level"],
+        tags=["探针:口径二", "对照"],
+    ),
+    EvalCase(
+        id="JC4",
+        query="不论订单状态，全部订单的实付金额字段加起来是多少？保留两位小数。",
+        reference_sql="SELECT ROUND(SUM(pay_amount), 2) FROM fact_order",
+        must_hit_columns=["fact_order.pay_amount"],
+        tags=["探针:口径二", "对照"],
+    ),
+    EvalCase(
+        id="JC5",
+        query="已取消的订单，按下单渠道各有多少笔？列出下单渠道和笔数。",
+        reference_sql="SELECT channel, COUNT(*) FROM fact_order WHERE order_status = '已取消' GROUP BY channel",
+        must_hit_columns=["fact_order.order_status", "fact_order.channel"],
+        tags=["探针:口径二", "对照"],
+    ),
+]
+
+KOUJING_WRONG_SQL = {
+    "J01": (
+        "SELECT COUNT(DISTINCT o.user_id)"
+        " FROM fact_order o"
+        " JOIN fact_order_item i ON i.order_id = o.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+        " WHERE pc.category_name = '数码电器'"
+    ),
+    "J02": (
+        "SELECT channel, COUNT(*)"
+        " FROM fact_order"
+        " WHERE order_status = '已支付'"
+        " GROUP BY channel"
+    ),
+    "J03": (
+        "SELECT u.city, ROUND(SUM(o.pay_amount), 2)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " GROUP BY u.city"
+    ),
+    "J04": (
+        "SELECT user_id, ROUND(SUM(pay_amount), 2)"
+        " FROM fact_order"
+        " GROUP BY user_id"
+        " ORDER BY SUM(pay_amount) DESC LIMIT 3"
+    ),
+    "J05": (
+        "SELECT u.member_level, COUNT(DISTINCT o.user_id)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " WHERE o.order_status = '已支付'"
+        " GROUP BY u.member_level"
+    ),
+    "J06": (
+        "SELECT COUNT(DISTINCT o.order_id)"
+        " FROM fact_order o"
+        " JOIN fact_order_item i ON i.order_id = o.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " WHERE c.category_name = '彩妆香水'"
+    ),
+    "J07": (
+        "SELECT s.shop_type, ROUND(SUM(o.pay_amount), 2)"
+        " FROM fact_order o"
+        " JOIN dim_shop s ON s.shop_id = o.shop_id"
+        " GROUP BY s.shop_type"
+    ),
+    "J08": (
+        "SELECT ROUND(AVG(pay_amount), 2)"
+        " FROM fact_order"
+        " WHERE order_status = '已支付'"
+    ),
+}
+
+
 WRONG_SQL = {
     **{case.id: _integer_division(case.reference_sql) for case in _INT_DIV_ECOMMERCE + _INT_DIV_CHINOOK},
     **FAN_OUT_SQL,
     **TOPN_WRONG_SQL,
     **TIME_DIFF_WRONG_SQL,
     **UNIQ_WRONG_SQL,
+    **KOUJING_WRONG_SQL,
 }
 
 PROBE_BANKS = {
-    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE + _UNIQ_ECOMMERCE,
+    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE + _UNIQ_ECOMMERCE + _KOUJING_ECOMMERCE,
     "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK + _UNIQ_CHINOOK,
 }
