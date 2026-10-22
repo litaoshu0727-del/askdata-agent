@@ -1,0 +1,65 @@
+{
+  "H8E01": [
+    "SELECT p.category_name, ROUND(SUM(o.pay_amount), 2) FROM fact_order o JOIN (SELECT DISTINCT i.order_id, pr.category_id FROM fact_order_item i JOIN dim_product pr ON pr.product_id = i.product_id) x ON x.order_id = o.order_id JOIN dim_category c ON c.category_id = x.category_id JOIN dim_category p ON p.category_id = c.parent_category_id WHERE o.pay_time IS NOT NULL GROUP BY p.category_name"
+  ],
+  "H8E04": [
+    "SELECT u.user_name FROM dim_user u JOIN dws_user_summary s ON s.user_id = u.user_id WHERE s.total_pay_amount = 0 AND u.user_id IN (SELECT user_id FROM fact_user_behavior)"
+  ],
+  "H8E05": [
+    "WITH d AS (SELECT date(create_time) AS dt, SUM(order_amount) AS g FROM fact_order GROUP BY dt), l AS (SELECT dt, g - LAG(g) OVER (ORDER BY dt) AS diff FROM d) SELECT dt, ROUND(diff, 2) FROM l WHERE diff IS NOT NULL ORDER BY diff DESC LIMIT 1"
+  ],
+  "H8E06": [
+    "SELECT s.shop_name, COUNT(*) FROM (SELECT shop_id, date(create_time) AS dt, SUM(order_amount) AS g FROM fact_order GROUP BY shop_id, dt) d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE d.g > 50000 GROUP BY s.shop_id, s.shop_name HAVING COUNT(*) >= 5"
+  ],
+  "H8E08": [
+    "WITH t AS (SELECT u.member_level, p.pay_channel, SUM(o.pay_amount) AS amt FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_user u ON u.user_id = o.user_id GROUP BY 1, 2), r AS (SELECT t.*, RANK() OVER (PARTITION BY member_level ORDER BY amt DESC) AS rk FROM t) SELECT member_level, pay_channel FROM r WHERE rk = 1"
+  ],
+  "H8E10": [
+    "SELECT s.shop_name, SUM(d.order_count) AS n FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE d.stat_date BETWEEN '2024-05-10' AND '2024-05-20' GROUP BY s.shop_id, s.shop_name ORDER BY n DESC LIMIT 4"
+  ],
+  "H8E11": [
+    "SELECT u.province, ROUND(AVG(s.total_pay_amount), 2) FROM dws_user_summary s JOIN dim_user u ON u.user_id = s.user_id WHERE s.total_pay_amount > 0 GROUP BY u.province"
+  ],
+  "H8E12": [
+    "SELECT c.category_name FROM dim_category c WHERE c.category_level = 2 AND c.category_id NOT IN (SELECT pr.category_id FROM fact_refund r JOIN fact_order_item i ON i.order_id = r.order_id JOIN dim_product pr ON pr.product_id = i.product_id WHERE r.refund_reason = '七天无理由')"
+  ],
+  "H8E13": [
+    "SELECT dt, ROUND(SUM(SUM(order_amount)) OVER (ORDER BY dt), 2) FROM (SELECT date(create_time) AS dt, order_amount FROM fact_order) WHERE dt BETWEEN '2024-05-01' AND '2024-05-07' GROUP BY dt ORDER BY dt"
+  ],
+  "H8E14": [
+    "SELECT DISTINCT p.brand FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_shop s ON s.shop_id = p.shop_id WHERE u.city = '上海' AND s.city = '深圳' AND o.pay_time IS NOT NULL"
+  ],
+  "H8E18": [
+    "WITH ua AS (SELECT user_id, AVG(pay_amount) AS a FROM fact_order GROUP BY user_id), t AS (SELECT u.member_level, ua.a FROM ua JOIN dim_user u ON u.user_id = ua.user_id) SELECT member_level, COUNT(*) FROM t WHERE a > (SELECT AVG(t2.a) FROM t t2 WHERE t2.member_level = t.member_level) GROUP BY member_level"
+  ],
+  "H8E24": [
+    "SELECT s.shop_name, s.shop_status, SUM(d.order_count) FROM dim_shop s JOIN dws_shop_daily d ON d.shop_id = s.shop_id WHERE s.shop_status <> '正常营业' GROUP BY s.shop_id, s.shop_name, s.shop_status"
+  ],
+  "H8E27": [
+    "WITH d AS (SELECT shop_id, date(create_time) AS dt, SUM(pay_amount) AS pa FROM fact_order WHERE pay_time IS NOT NULL GROUP BY shop_id, dt), r AS (SELECT d.*, ROW_NUMBER() OVER (PARTITION BY shop_id ORDER BY pa DESC) AS rk FROM d) SELECT s.shop_name, r.dt, ROUND(r.pa, 2) FROM r JOIN dim_shop s ON s.shop_id = r.shop_id WHERE rk = 1"
+  ],
+  "H8C15": [
+    "SELECT i.BillingCountry, ROUND(SUM(i.Total) / COUNT(DISTINCT i.CustomerId), 2) FROM Invoice i GROUP BY i.BillingCountry HAVING COUNT(DISTINCT i.CustomerId) >= 3"
+  ],
+  "H8E20": [
+    "WITH t AS (SELECT shop_id, SUM(CASE WHEN stat_date <= '2024-05-15' THEN pay_amount ELSE 0 END) AS h1, SUM(CASE WHEN stat_date >= '2024-05-16' THEN pay_amount ELSE 0 END) AS h2 FROM dws_shop_daily GROUP BY shop_id) SELECT s.shop_name, ROUND(100.0 * (h2 - h1) / h1, 2) FROM t JOIN dim_shop s ON s.shop_id = t.shop_id ORDER BY (h2 - h1) / h1 DESC LIMIT 3"
+  ],
+  "H8E25": [
+    "SELECT strftime('%Y', u.register_time), ROUND(AVG(s.total_order_count), 2) FROM dim_user u JOIN dws_user_summary s ON s.user_id = u.user_id GROUP BY 1"
+  ],
+  "H8C01": [
+    "WITH t AS (SELECT m.Name AS media, COUNT(*) AS units FROM Invoice i JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId JOIN Track t ON t.TrackId = il.TrackId JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId WHERE i.BillingCountry = 'USA' GROUP BY m.Name) SELECT media, ROUND(100.0 * units / (SELECT SUM(units) FROM t), 2) FROM t"
+  ],
+  "H8C04": [
+    "SELECT g.Name FROM Genre g WHERE g.GenreId NOT IN (SELECT t.GenreId FROM Track t JOIN InvoiceLine il ON il.TrackId = t.TrackId JOIN Invoice i ON i.InvoiceId = il.InvoiceId WHERE i.BillingCountry = 'Canada')"
+  ],
+  "H8C05": [
+    "WITH s AS (SELECT al.ArtistId, al.AlbumId, COUNT(*) AS units FROM Album al JOIN Track t ON t.AlbumId = al.AlbumId JOIN InvoiceLine il ON il.TrackId = t.TrackId GROUP BY 1, 2), a AS (SELECT ArtistId, AVG(units) AS au FROM s GROUP BY ArtistId HAVING COUNT(*) >= 3) SELECT ar.Name, ROUND(au, 2) FROM a JOIN Artist ar ON ar.ArtistId = a.ArtistId ORDER BY au DESC LIMIT 3"
+  ],
+  "H8C11": [
+    "SELECT ROUND(SUM(t.UnitPrice), 2) FROM InvoiceLine il JOIN Track t ON t.TrackId = il.TrackId WHERE t.Composer LIKE '%Bono%'"
+  ],
+  "H8E02": [
+    "WITH g AS (SELECT shop_id, stat_date, julianday(stat_date) - ROW_NUMBER() OVER (PARTITION BY shop_id ORDER BY stat_date) AS grp FROM dws_shop_daily), s AS (SELECT shop_id, grp, COUNT(*) AS n FROM g GROUP BY 1, 2) SELECT sh.shop_name, MAX(n) FROM s JOIN dim_shop sh ON sh.shop_id = s.shop_id GROUP BY sh.shop_id, sh.shop_name"
+  ]
+}
