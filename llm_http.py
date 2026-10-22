@@ -10,6 +10,9 @@ Web 界面和直接调用链路时，一次 429 就是一次报错。第四套�
 
     429、500、502、503、504          重试；有 Retry-After 就按它等
     超时、连接被重置、对端提前断开     重试
+    读响应体时断了（IncompleteRead）  重试——拿到了响应头、正文没读完。第七套之后的一次回归里
+                                      出现了几十次 IncompleteRead(0 bytes read)，原先不重试，
+                                      靠评测器把整道题重跑才接住；Web 界面上就是一次报错
     400、401、402、403 等其余 4xx     不重试——Key 失效、余额耗尽，再试一百次也一样
 
 报错文本保持 urllib 的原文（"HTTP Error 402: Payment Required"）：评测器靠这些字样
@@ -93,6 +96,15 @@ def _with_retry(request, timeout, handle, label, max_retries, sleep, close=True)
     for attempt in range(max_retries + 1):
         try:
             response = urllib.request.urlopen(request, timeout=timeout)
+
+            if not close:
+                # 流式：只管建立连接。读是调用方的事，流开始以后再断不重试
+                return handle(response)
+
+            # 非流式：读响应体也在重试范围里——正文没读完就断（IncompleteRead）时，
+            # 还什么都没交给调用方，重来不会重复
+            with response:
+                return handle(response)
         except Exception as exc:
             delay = _retry_delay(exc, attempt)
 
@@ -103,16 +115,9 @@ def _with_retry(request, timeout, handle, label, max_retries, sleep, close=True)
                 Codes.MODEL_CALL_RETRIED,
                 f"{label}接口暂时不可用，等 {delay:g} 秒后重试",
                 第几次=attempt + 1,
-                原因=str(exc)[:80],
+                原因=(str(exc) or type(exc).__name__)[:80],
             )
             sleep(delay)
-            continue
-
-        if not close:
-            return handle(response)
-
-        with response:
-            return handle(response)
 
     raise AssertionError("unreachable")
 
@@ -129,7 +134,10 @@ def _retry_delay(exc: Exception, attempt: int) -> Optional[float]:
 
         return BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
 
-    transient = (socket.timeout, TimeoutError, ConnectionResetError, http.client.RemoteDisconnected)
+    transient = (
+        socket.timeout, TimeoutError, ConnectionResetError,
+        http.client.RemoteDisconnected, http.client.IncompleteRead,
+    )
     reason = getattr(exc, "reason", None)  # URLError 把底层异常包在 reason 里
 
     if isinstance(exc, transient) or isinstance(reason, transient):

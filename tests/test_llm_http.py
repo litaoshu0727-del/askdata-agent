@@ -11,6 +11,7 @@ import logging  # noqa: E402
 
 logging.getLogger("askdata").disabled = True
 
+import http.client  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
@@ -48,7 +49,8 @@ class _Server:
                 self.send_response(status)
                 for key, value in headers.items():
                     self.send_header(key, value)
-                self.send_header("Content-Length", str(len(data)))
+                if "Content-Length" not in headers:   # 脚本里写了就照写：声称的比实际长，客户端读到 IncompleteRead
+                    self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 try:
                     self.wfile.write(data)
@@ -66,6 +68,11 @@ class _Server:
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def truncated():
+    """拿到了 200 和响应头，正文一个字节没给就断了：客户端读到 IncompleteRead(0 bytes read)。"""
+    return (200, {"Content-Length": "100", "Connection": "close"}, b"", 0)
 
 
 def busy(status, retry_after=None):
@@ -130,6 +137,32 @@ class PostJsonRetryTest(unittest.TestCase):
         self.assertEqual(sleeps, [1.0])
         self.assertEqual(codes, [Codes.MODEL_CALL_RETRIED])
 
+    def test_truncated_body_is_retried(self):
+        """
+        第七套之后的一次回归里，IncompleteRead(0 bytes read) 出现了几十次。原先重试只包住建立连接，
+        读响应体时断了直接抛出去。
+        """
+        server = self.serve(truncated())
+        result, sleeps, codes = self.call(server)
+        self.assertEqual(result, OK_BODY)
+        self.assertEqual(sleeps, [1.0])
+        self.assertEqual(codes, [Codes.MODEL_CALL_RETRIED])
+        self.assertEqual(len(server.requests), 2)
+
+    def test_truncated_body_every_time_gives_up_with_the_original_error(self):
+        server = self.serve(truncated(), truncated(), truncated(), truncated())
+        result, sleeps, _ = self.call(server)
+        self.assertIsInstance(result, http.client.IncompleteRead)
+        self.assertEqual(sleeps, [1.0, 2.0, 4.0])
+        self.assertEqual(len(server.requests), 4)
+
+    def test_body_that_is_not_json_is_not_retried(self):
+        """正文完整但不是 JSON：不是"等一等就会好"的问题，重试也一样。"""
+        server = self.serve((200, {}, b"<html>oops</html>", 0))
+        result, sleeps, _ = self.call(server)
+        self.assertIsInstance(result, json.JSONDecodeError)
+        self.assertEqual((sleeps, len(server.requests)), ([], 1))
+
     def test_sends_bearer_key_and_json(self):
         server = self.serve()
         self.call(server)
@@ -158,6 +191,14 @@ class StreamAndClientWiringTest(unittest.TestCase):
         client = CoderModelClient(CoderModelConfig(api_key="k", base_url=server.url, model="m"))
         with silenced():
             self.assertEqual(client.generate_sql("p"), "SELECT 1")
+        self.assertEqual(len(server.requests), 2)
+
+    def test_thinking_client_survives_a_truncated_body(self):
+        """CoT 规划走的是非流式调用，回归里报 IncompleteRead 最多的就是它。"""
+        server = self.serve(truncated())
+        client = ThinkingModelClient(ThinkingModelConfig(api_key="k", base_url=server.url, model="m"))
+        with silenced():
+            self.assertEqual(client.generate("p"), "SELECT 1")
         self.assertEqual(len(server.requests), 2)
 
     def test_thinking_client_stream_survives_a_429(self):
