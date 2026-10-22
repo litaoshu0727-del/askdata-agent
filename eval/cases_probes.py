@@ -20,9 +20,14 @@
                      Y01–Y02       对照：按整天比较，julianday 本来就准
     探针:时间差二    D05–D07       措辞定了以后才写
                      Y03           对照
+    探针:唯一与挂单  U01–U07       全都是同一个 X（第七套之后）；U05–U07 的 X 要经过一两张表才拿得到
+                     V01–V03       退款、支付挂在订单上，按明细的维度（类目）汇总
+                     UC1、VC1      对照
+    探针:唯一与挂单二 U08–U10、V04–V06  措辞定了以后才写
+                     UC2、VC2      对照
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
-`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440。窗口筛选的题
+`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440；全都是同一个 X 的是把 X 也放进 GROUP BY；挂单的是直接连明细再 SUM。窗口筛选的题
 没有错误写法：它们的失败是 SQL 报错（外层看不到内层的列、WHERE 里用了窗口函数）。tests/test_probes.py 检查错误写法
 的答案和参考答案确实不同——否则这道探针区分不出规则有没有起作用。对照题没有错误写法，
 它们用来确认规则没把模型带偏。
@@ -31,7 +36,7 @@
     python -m eval.runner --bank probes --dataset chinook --repeat 3
 
 整数除法两批原先只存在临时目录里，被系统清理了，从当时的会话记录里原样找回。
-结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」。
+结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」「全都是同一个 X，和挂在订单上的退款」。
 """
 
 from eval.cases import EvalCase
@@ -1472,14 +1477,414 @@ TIME_DIFF_WRONG_SQL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 全都是同一个 X（U）、挂在订单上的金额连到明细（V）（第七套留出集之后）。
+# ---------------------------------------------------------------------------
+
+_UNIQ_ECOMMERCE = [
+    EvalCase(
+        id="U01",
+        query="只看已完成的订单，只在一家店铺下过单的用户，按会员等级各有多少位？列出会员等级和用户数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(*)"
+            " FROM dim_user u"
+            " WHERE u.user_id IN (SELECT user_id FROM fact_order WHERE order_status = '已完成' GROUP BY user_id HAVING COUNT(DISTINCT shop_id) = 1)"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level", "fact_order.shop_id", "fact_order.order_status"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="U02",
+        query="订单里的商品全都是同一个品牌的那些订单，按下单渠道各有多少笔？列出下单渠道和笔数。",
+        reference_sql=(
+            "SELECT o.channel, COUNT(*)"
+            " FROM fact_order o"
+            " WHERE o.order_id IN (SELECT i.order_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id GROUP BY i.order_id HAVING COUNT(DISTINCT p.brand) = 1)"
+            " GROUP BY o.channel"
+        ),
+        must_hit_columns=["dim_product.brand", "fact_order.channel"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="V01",
+        query="退款成功的退款金额，按商品所属的一级类目分各是多少？列出一级类目名称和金额，保留两位小数。",
+        reference_sql=(
+            "SELECT pc.category_name, ROUND(SUM(r.refund_amount), 2)"
+            " FROM fact_refund r"
+            " JOIN (SELECT DISTINCT i.order_id, c.parent_category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id) x ON x.order_id = r.order_id"
+            " JOIN dim_category pc ON pc.category_id = x.parent_category_id"
+            " WHERE r.refund_status = '退款成功'"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_refund.refund_amount", "fact_refund.refund_status", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="V02",
+        query="用支付宝付的钱（按支付记录的支付金额），按商品所属的二级类目分各是多少？列出二级类目名称和金额，保留两位小数。",
+        reference_sql=(
+            "SELECT c.category_name, ROUND(SUM(pm.pay_amount), 2)"
+            " FROM fact_payment pm"
+            " JOIN (SELECT DISTINCT i.order_id, p.category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id) x ON x.order_id = pm.order_id"
+            " JOIN dim_category c ON c.category_id = x.category_id"
+            " WHERE pm.pay_channel = '支付宝'"
+            " GROUP BY c.category_id, c.category_name"
+        ),
+        must_hit_columns=["fact_payment.pay_amount", "fact_payment.pay_channel", "dim_category.category_name"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="V03",
+        query="按商品所属的一级类目分，退款记录各有多少笔、退款金额各是多少？列出一级类目名称、退款笔数和金额（保留两位小数）。",
+        reference_sql=(
+            "SELECT pc.category_name, COUNT(*), ROUND(SUM(r.refund_amount), 2)"
+            " FROM fact_refund r"
+            " JOIN (SELECT DISTINCT i.order_id, c.parent_category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id) x ON x.order_id = r.order_id"
+            " JOIN dim_category pc ON pc.category_id = x.parent_category_id"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_refund.refund_amount", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="VC1",
+        query="有过退款的订单，它们的商品明细金额按一级类目分各是多少？列出一级类目名称和明细金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT pc.category_name, ROUND(SUM(i.item_amount), 2)"
+            " FROM fact_order_item i"
+            " JOIN dim_product p ON p.product_id = i.product_id"
+            " JOIN dim_category c ON c.category_id = p.category_id"
+            " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+            " WHERE i.order_id IN (SELECT order_id FROM fact_refund)"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_order_item.item_amount", "fact_refund.order_id", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单", "对照"],
+    ),
+    EvalCase(
+        id="U05",
+        query="已付款的订单里，买的商品全都来自同一个一级类目的用户，按性别各有多少位？列出性别和用户数。",
+        reference_sql=(
+            "SELECT u.gender, COUNT(*)"
+            " FROM dim_user u"
+            " WHERE u.user_id IN (SELECT o.user_id FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id WHERE o.pay_time IS NOT NULL GROUP BY o.user_id HAVING COUNT(DISTINCT c.parent_category_id) = 1)"
+            " GROUP BY u.gender"
+        ),
+        must_hit_columns=["dim_user.gender", "dim_category.parent_category_id", "fact_order.pay_time"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="U08",
+        query="按支付记录看，只用过一种支付渠道付款的用户，按所在省份各有多少位？列出省份和用户数。",
+        reference_sql=(
+            "SELECT u.province, COUNT(*)"
+            " FROM dim_user u"
+            " WHERE u.user_id IN (SELECT o.user_id FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id GROUP BY o.user_id HAVING COUNT(DISTINCT p.pay_channel) = 1)"
+            " GROUP BY u.province"
+        ),
+        must_hit_columns=["dim_user.province", "fact_payment.pay_channel"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="V04",
+        query="还在退款中的退款金额，按商品所属的二级类目分各是多少？列出二级类目名称和金额，保留两位小数。",
+        reference_sql=(
+            "SELECT c.category_name, ROUND(SUM(r.refund_amount), 2)"
+            " FROM fact_refund r"
+            " JOIN (SELECT DISTINCT i.order_id, p.category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id) x ON x.order_id = r.order_id"
+            " JOIN dim_category c ON c.category_id = x.category_id"
+            " WHERE r.refund_status = '退款中'"
+            " GROUP BY c.category_id, c.category_name"
+        ),
+        must_hit_columns=["fact_refund.refund_status", "fact_refund.refund_amount", "dim_category.category_name"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="V05",
+        query="支付成功的支付记录，按商品所属的一级类目分各有多少笔、金额多少？列出一级类目名称、笔数和金额（保留两位小数）。",
+        reference_sql=(
+            "SELECT pc.category_name, COUNT(*), ROUND(SUM(pm.pay_amount), 2)"
+            " FROM fact_payment pm"
+            " JOIN (SELECT DISTINCT i.order_id, c.parent_category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id) x ON x.order_id = pm.order_id"
+            " JOIN dim_category pc ON pc.category_id = x.parent_category_id"
+            " WHERE pm.pay_status = '支付成功'"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_payment.pay_status", "fact_payment.pay_amount", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="V06",
+        query="有过退款的订单，它们的订单实付金额按商品所属的一级类目分各是多少？列出一级类目名称和实付金额合计（保留两位小数）。",
+        reference_sql=(
+            "SELECT pc.category_name, ROUND(SUM(o.pay_amount), 2)"
+            " FROM fact_order o"
+            " JOIN (SELECT DISTINCT i.order_id, c.parent_category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id) x ON x.order_id = o.order_id"
+            " JOIN dim_category pc ON pc.category_id = x.parent_category_id"
+            " WHERE o.order_id IN (SELECT order_id FROM fact_refund)"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_order.pay_amount", "fact_refund.order_id", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="VC2",
+        query="有过退款的订单里卖出的商品件数，按一级类目分各是多少？列出一级类目名称和件数。",
+        reference_sql=(
+            "SELECT pc.category_name, SUM(i.quantity)"
+            " FROM fact_order_item i"
+            " JOIN dim_product p ON p.product_id = i.product_id"
+            " JOIN dim_category c ON c.category_id = p.category_id"
+            " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+            " WHERE i.order_id IN (SELECT order_id FROM fact_refund)"
+            " GROUP BY pc.category_id, pc.category_name"
+        ),
+        must_hit_columns=["fact_order_item.quantity", "fact_refund.order_id", "dim_category.parent_category_id"],
+        tags=["探针:唯一与挂单二", "对照"],
+    ),
+]
+
+_UNIQ_CHINOOK = [
+    EvalCase(
+        id="U03",
+        query="发票里买的曲目全都属于同一个流派的那些发票，按账单国家各有多少张？列出国家和发票张数。",
+        reference_sql=(
+            "SELECT i.BillingCountry, COUNT(*)"
+            " FROM Invoice i"
+            " WHERE i.InvoiceId IN (SELECT il.InvoiceId FROM InvoiceLine il JOIN Track t ON t.TrackId = il.TrackId GROUP BY il.InvoiceId HAVING COUNT(DISTINCT t.GenreId) = 1)"
+            " GROUP BY i.BillingCountry"
+        ),
+        must_hit_columns=["Invoice.BillingCountry", "Track.GenreId"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="U04",
+        query="哪些艺术家名下的曲目全都属于同一个流派？只看有曲目的艺术家，列出艺术家名和那个流派的名称。",
+        reference_sql=(
+            "SELECT ar.Name, MIN(g.Name)"
+            " FROM Artist ar"
+            " JOIN Album al ON al.ArtistId = ar.ArtistId"
+            " JOIN Track t ON t.AlbumId = al.AlbumId"
+            " JOIN Genre g ON g.GenreId = t.GenreId"
+            " GROUP BY ar.ArtistId, ar.Name"
+            " HAVING COUNT(DISTINCT t.GenreId) = 1"
+        ),
+        must_hit_columns=["Artist.Name", "Genre.Name", "Track.GenreId"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="UC1",
+        query="Brazilian Music 和 Grunge 这两个歌单里，各个流派分别收了几首曲目？列出歌单名称、流派名称和曲目数。",
+        reference_sql=(
+            "SELECT p.Name, g.Name, COUNT(*)"
+            " FROM Playlist p"
+            " JOIN PlaylistTrack pt ON pt.PlaylistId = p.PlaylistId"
+            " JOIN Track t ON t.TrackId = pt.TrackId"
+            " JOIN Genre g ON g.GenreId = t.GenreId"
+            " WHERE p.Name IN ('Brazilian Music', 'Grunge')"
+            " GROUP BY p.PlaylistId, p.Name, g.GenreId, g.Name"
+        ),
+        must_hit_columns=["Playlist.Name", "Genre.Name"],
+        tags=["探针:唯一与挂单", "对照"],
+    ),
+    EvalCase(
+        id="U06",
+        query="哪些歌单收的曲目全都出自同一位艺术家？列出歌单名称和那位艺术家的名字。",
+        reference_sql=(
+            "SELECT p.Name, MIN(ar.Name)"
+            " FROM Playlist p"
+            " JOIN PlaylistTrack pt ON pt.PlaylistId = p.PlaylistId"
+            " JOIN Track t ON t.TrackId = pt.TrackId"
+            " JOIN Album al ON al.AlbumId = t.AlbumId"
+            " JOIN Artist ar ON ar.ArtistId = al.ArtistId"
+            " GROUP BY p.PlaylistId, p.Name"
+            " HAVING COUNT(DISTINCT al.ArtistId) = 1"
+        ),
+        must_hit_columns=["Playlist.Name", "Artist.Name", "Album.ArtistId"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="U07",
+        query="买过的曲目全都是同一种媒体类型的客户，按客户所在国家各有多少位？列出国家和客户数。",
+        reference_sql=(
+            "SELECT c.Country, COUNT(*)"
+            " FROM Customer c"
+            " WHERE c.CustomerId IN (SELECT i.CustomerId FROM Invoice i JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId JOIN Track t ON t.TrackId = il.TrackId GROUP BY i.CustomerId HAVING COUNT(DISTINCT t.MediaTypeId) = 1)"
+            " GROUP BY c.Country"
+        ),
+        must_hit_columns=["Customer.Country", "Track.MediaTypeId"],
+        tags=["探针:唯一与挂单"],
+    ),
+    EvalCase(
+        id="U09",
+        query="买的曲目全都来自同一张专辑的发票，按开票年份各有多少张？列出年份和发票张数。",
+        reference_sql=(
+            "SELECT strftime('%Y', i.InvoiceDate), COUNT(*)"
+            " FROM Invoice i"
+            " WHERE i.InvoiceId IN (SELECT il.InvoiceId FROM InvoiceLine il JOIN Track t ON t.TrackId = il.TrackId GROUP BY il.InvoiceId HAVING COUNT(DISTINCT t.AlbumId) = 1)"
+            " GROUP BY strftime('%Y', i.InvoiceDate)"
+        ),
+        must_hit_columns=["Invoice.InvoiceDate", "Track.AlbumId"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="U10",
+        query="买的曲目全都出自同一位艺术家的发票，按那位艺术家统计各有多少张？列出艺术家名和发票张数。",
+        reference_sql=(
+            "SELECT ar.Name, COUNT(*)"
+            " FROM (SELECT il.InvoiceId, MIN(al.ArtistId) AS ArtistId FROM InvoiceLine il JOIN Track t ON t.TrackId = il.TrackId JOIN Album al ON al.AlbumId = t.AlbumId GROUP BY il.InvoiceId HAVING COUNT(DISTINCT al.ArtistId) = 1) x"
+            " JOIN Artist ar ON ar.ArtistId = x.ArtistId"
+            " GROUP BY ar.ArtistId, ar.Name"
+        ),
+        must_hit_columns=["Artist.Name", "Album.ArtistId"],
+        tags=["探针:唯一与挂单二"],
+    ),
+    EvalCase(
+        id="UC2",
+        query="每位销售支持员工负责的客户，按客户所在国家分别有几位？列出员工编号、国家和客户数。",
+        reference_sql="SELECT SupportRepId, Country, COUNT(*) FROM Customer GROUP BY SupportRepId, Country",
+        must_hit_columns=["Customer.SupportRepId", "Customer.Country"],
+        tags=["探针:唯一与挂单二", "对照"],
+    ),
+]
+
+UNIQ_WRONG_SQL = {
+    "U01": (
+        "SELECT u.member_level, COUNT(DISTINCT o.user_id)"
+        " FROM fact_order o"
+        " JOIN dim_user u ON u.user_id = o.user_id"
+        " WHERE o.order_status = '已完成'"
+        " GROUP BY u.member_level"
+        " HAVING COUNT(DISTINCT o.shop_id) >= 1"
+    ),
+    "U02": (
+        "SELECT channel, COUNT(*)"
+        " FROM (SELECT o.channel, o.order_id FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id GROUP BY o.channel, o.order_id, p.brand HAVING COUNT(DISTINCT p.brand) = 1)"
+        " GROUP BY channel"
+    ),
+    "U03": (
+        "SELECT BillingCountry, COUNT(*)"
+        " FROM (SELECT i.BillingCountry, i.InvoiceId FROM Invoice i JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId JOIN Track t ON t.TrackId = il.TrackId GROUP BY i.BillingCountry, i.InvoiceId, t.GenreId HAVING COUNT(DISTINCT t.GenreId) = 1)"
+        " GROUP BY BillingCountry"
+    ),
+    "U04": (
+        "SELECT ar.Name, g.Name"
+        " FROM Artist ar"
+        " JOIN Album al ON al.ArtistId = ar.ArtistId"
+        " JOIN Track t ON t.AlbumId = al.AlbumId"
+        " JOIN Genre g ON g.GenreId = t.GenreId"
+        " GROUP BY ar.ArtistId, ar.Name, g.GenreId, g.Name"
+        " HAVING COUNT(DISTINCT t.GenreId) = 1"
+    ),
+    "V01": (
+        "SELECT pc.category_name, ROUND(SUM(r.refund_amount), 2)"
+        " FROM fact_refund r"
+        " JOIN fact_order_item i ON i.order_id = r.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+        " WHERE r.refund_status = '退款成功'"
+        " GROUP BY pc.category_name"
+    ),
+    "V02": (
+        "SELECT c.category_name, ROUND(SUM(pm.pay_amount), 2)"
+        " FROM fact_payment pm"
+        " JOIN fact_order_item i ON i.order_id = pm.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " WHERE pm.pay_channel = '支付宝'"
+        " GROUP BY c.category_name"
+    ),
+    "V03": (
+        "SELECT pc.category_name, COUNT(*), ROUND(SUM(r.refund_amount), 2)"
+        " FROM fact_refund r"
+        " JOIN fact_order_item i ON i.order_id = r.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+        " GROUP BY pc.category_name"
+    ),
+    "U05": (
+        "SELECT gender, COUNT(DISTINCT user_id)"
+        " FROM (SELECT u.gender, o.user_id FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id WHERE o.pay_time IS NOT NULL GROUP BY u.gender, o.user_id, c.parent_category_id HAVING COUNT(DISTINCT c.parent_category_id) = 1)"
+        " GROUP BY gender"
+    ),
+    "U06": (
+        "SELECT p.Name, ar.Name"
+        " FROM Playlist p"
+        " JOIN PlaylistTrack pt ON pt.PlaylistId = p.PlaylistId"
+        " JOIN Track t ON t.TrackId = pt.TrackId"
+        " JOIN Album al ON al.AlbumId = t.AlbumId"
+        " JOIN Artist ar ON ar.ArtistId = al.ArtistId"
+        " GROUP BY p.PlaylistId, p.Name, ar.ArtistId, ar.Name"
+        " HAVING COUNT(DISTINCT al.ArtistId) = 1"
+    ),
+    "U07": (
+        "SELECT Country, COUNT(DISTINCT CustomerId)"
+        " FROM (SELECT c.Country, c.CustomerId FROM Customer c JOIN Invoice i ON i.CustomerId = c.CustomerId JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId JOIN Track t ON t.TrackId = il.TrackId GROUP BY c.Country, c.CustomerId, t.MediaTypeId HAVING COUNT(DISTINCT t.MediaTypeId) = 1)"
+        " GROUP BY Country"
+    ),
+    "U08": (
+        "SELECT province, COUNT(DISTINCT user_id)"
+        " FROM (SELECT u.province, u.user_id FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_user u ON u.user_id = o.user_id GROUP BY u.province, u.user_id, p.pay_channel HAVING COUNT(DISTINCT p.pay_channel) = 1)"
+        " GROUP BY province"
+    ),
+    "V04": (
+        "SELECT c.category_name, ROUND(SUM(r.refund_amount), 2)"
+        " FROM fact_refund r"
+        " JOIN fact_order_item i ON i.order_id = r.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " WHERE r.refund_status = '退款中'"
+        " GROUP BY c.category_name"
+    ),
+    "V05": (
+        "SELECT pc.category_name, COUNT(*), ROUND(SUM(pm.pay_amount), 2)"
+        " FROM fact_payment pm"
+        " JOIN fact_order_item i ON i.order_id = pm.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+        " WHERE pm.pay_status = '支付成功'"
+        " GROUP BY pc.category_name"
+    ),
+    "V06": (
+        "SELECT pc.category_name, ROUND(SUM(o.pay_amount), 2)"
+        " FROM fact_order o"
+        " JOIN fact_order_item i ON i.order_id = o.order_id"
+        " JOIN dim_product p ON p.product_id = i.product_id"
+        " JOIN dim_category c ON c.category_id = p.category_id"
+        " JOIN dim_category pc ON pc.category_id = c.parent_category_id"
+        " WHERE o.order_id IN (SELECT order_id FROM fact_refund)"
+        " GROUP BY pc.category_name"
+    ),
+    "U09": (
+        "SELECT y, COUNT(*)"
+        " FROM (SELECT strftime('%Y', i.InvoiceDate) AS y, i.InvoiceId FROM Invoice i JOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId JOIN Track t ON t.TrackId = il.TrackId GROUP BY y, i.InvoiceId, t.AlbumId HAVING COUNT(DISTINCT t.AlbumId) = 1)"
+        " GROUP BY y"
+    ),
+    "U10": (
+        "SELECT ar.Name, COUNT(DISTINCT il.InvoiceId)"
+        " FROM InvoiceLine il"
+        " JOIN Track t ON t.TrackId = il.TrackId"
+        " JOIN Album al ON al.AlbumId = t.AlbumId"
+        " JOIN Artist ar ON ar.ArtistId = al.ArtistId"
+        " GROUP BY ar.ArtistId, ar.Name"
+        " HAVING COUNT(DISTINCT al.ArtistId) = 1"
+    ),
+}
+
+
 WRONG_SQL = {
     **{case.id: _integer_division(case.reference_sql) for case in _INT_DIV_ECOMMERCE + _INT_DIV_CHINOOK},
     **FAN_OUT_SQL,
     **TOPN_WRONG_SQL,
     **TIME_DIFF_WRONG_SQL,
+    **UNIQ_WRONG_SQL,
 }
 
 PROBE_BANKS = {
-    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE,
-    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK,
+    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE + _UNIQ_ECOMMERCE,
+    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK + _UNIQ_CHINOOK,
 }

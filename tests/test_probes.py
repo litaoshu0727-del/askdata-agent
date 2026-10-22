@@ -20,7 +20,7 @@ from askdata_pipeline.ecommerce_data import create_ecommerce_demo_database  # no
 from eval.cases_probes import PROBE_BANKS, WRONG_SQL  # noqa: E402
 from eval.runner import BANKS, DATASETS, case_ndigits, load_expected, normalize_rows  # noqa: E402
 
-BATCH_TAGS = {"探针:整数除法", "探针:整数除法二", "探针:一对多", "探针:一对多二", "探针:每组前N", "探针:每组前N二", "探针:时间差", "探针:时间差二"}
+BATCH_TAGS = {"探针:整数除法", "探针:整数除法二", "探针:一对多", "探针:一对多二", "探针:每组前N", "探针:每组前N二", "探针:时间差", "探针:时间差二", "探针:唯一与挂单", "探针:唯一与挂单二"}
 NO_WRONG_SQL = {"对照", "窗口筛选"}
 CHINOOK_DB = ROOT / "runtime_data" / "chinook.db"
 

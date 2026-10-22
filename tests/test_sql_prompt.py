@@ -96,6 +96,18 @@ class SqlPromptRulesTestCase(unittest.TestCase):
                 self.assertIn("strftime('%s', 晚的) - strftime('%s', 早的)", prompt)
                 self.assertIn("不要用 julianday 相减再乘 24 或 1440", prompt)
 
+    def test_uniqueness_and_order_attached_rules_in_both_prompts(self):
+        """
+        第七套：H7E06、H7C14 把"全都是同一个 X"里的 X 也放进 GROUP BY，HAVING COUNT(DISTINCT X) = 1 每组都成立；
+        H7E10 把退款直接连到订单明细再 SUM。模板是看着第一、二版的失败加的。
+        """
+        for name, prompt in self.prompts.items():
+            with self.subTest(提示词=name):
+                self.assertIn("HAVING COUNT(DISTINCT X) = 1", prompt)
+                self.assertIn("X 不要放进 GROUP BY", prompt)
+                self.assertIn("外层再按维度数", prompt)
+                self.assertIn("去重的是明细那一侧，不是退款表本身", prompt)
+
     def test_date_rule_in_both_prompts(self):
         """E44：带时分秒的字段写成 BETWEEN '起始日' AND '结束日'，结束日当天的记录全漏。"""
         for name, prompt in self.prompts.items():
