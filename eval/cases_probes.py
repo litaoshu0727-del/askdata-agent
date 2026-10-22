@@ -36,6 +36,9 @@
 
 口径定下来时，F03、F04、F06、G02、G05、M01、K01、K05、L01、K11 的参考答案（和错误写法）改成了只算已付款的订单：
 它们原先默认算全部订单，和定下的口径不一致。改之前的版本留在 git 历史里，之前记录的这几道题的分数是按旧参考答案量的。
+后来（同一天）补定：一道题里同时问订单笔数和实付金额时各按各的口径——笔数算全部订单，金额只算已付款的。F03 的笔数
+因此改回不加条件；W02（"第二笔订单比第一笔的实付金额多出多少"）当时漏改，补成只算已付款的订单。这两道是探针一键
+回归第一次全量时发现的：模型三次都照约定写，参考答案和约定对不上。
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
 `* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440；全都是同一个 X 的是把 X 也放进 GROUP BY；挂单的是直接连明细再 SUM；全称的是逐对判断、有一个满足就算（存在量词）。窗口筛选的题
@@ -284,8 +287,8 @@ _FAN_OUT_ECOMMERCE = [
         id="F03",
         query="包含「手机通讯」类商品的订单，按下单渠道统计订单笔数和实付金额合计（保留两位小数）。返回下单渠道、订单笔数、实付金额合计。",
         reference_sql=(
-            "SELECT channel, COUNT(*), ROUND(SUM(pay_amount), 2)"
-            " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) fact_order"
+            "SELECT channel, COUNT(*), ROUND(SUM(CASE WHEN pay_time IS NOT NULL THEN pay_amount END), 2)"
+            " FROM fact_order"
             " WHERE order_id IN (SELECT i.order_id FROM fact_order_item i JOIN dim_product p ON i.product_id = p.product_id JOIN dim_category c ON p.category_id = c.category_id WHERE c.category_name = '手机通讯')"
             " GROUP BY channel"
         ),
@@ -635,8 +638,8 @@ FAN_OUT_SQL = {
         " GROUP BY o.order_status"
     ),
     "F03": (
-        "SELECT o.channel, COUNT(*), ROUND(SUM(o.pay_amount), 2)"
-        " FROM (SELECT * FROM fact_order WHERE pay_time IS NOT NULL) o"
+        "SELECT o.channel, COUNT(*), ROUND(SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount END), 2)"
+        " FROM fact_order o"
         " JOIN fact_order_item i ON o.order_id = i.order_id"
         " JOIN dim_product p ON i.product_id = p.product_id"
         " JOIN dim_category c ON p.category_id = c.category_id"
@@ -968,7 +971,7 @@ _TOPN_ECOMMERCE = [
         query="每位用户按下单时间排的第二笔订单，比第一笔订单的实付金额多出多少？多出最多的 3 位用户是谁？只有一笔订单的用户不算。列出用户编号和多出的金额（保留两位小数）。",
         reference_sql=(
             "SELECT user_id, ROUND(d, 2)"
-            " FROM (SELECT user_id, pay_amount - LAG(pay_amount) OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS d, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS rn FROM fact_order)"
+            " FROM (SELECT user_id, pay_amount - LAG(pay_amount) OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS d, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY create_time, order_id) AS rn FROM fact_order WHERE pay_time IS NOT NULL)"
             " WHERE rn = 2"
             " ORDER BY d DESC LIMIT 3"
         ),
