@@ -45,6 +45,7 @@
 
     python -m eval.runner --bank probes --tag 探针:一对多 --repeat 3
     python -m eval.runner --bank probes --dataset chinook --repeat 3
+    python -m eval.probe_regression          # 全部探针一键回归，和上一次比（见 eval/probe_regression.py）
 
 整数除法两批原先只存在临时目录里，被系统清理了，从当时的会话记录里原样找回。
 结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」「全都是同一个 X，和挂在订单上的退款」「口径漂移」「全称：一个都没有写成有一个没有」。

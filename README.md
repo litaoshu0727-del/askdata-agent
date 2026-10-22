@@ -137,6 +137,7 @@ python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
 python -m eval.runner --bank probes --tag 探针:一对多 --repeat 3  # 探针：整数相除、一对多连接
+python -m eval.probe_regression                                 # 全部探针一键回归，和上一次比
 python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录
 ```
 
@@ -146,6 +147,9 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 - **多返回的列不算错**（第七套之后）：行数相同，能挑出同一组列和参考答案逐行对上，就算对；报告里
   单独列出这类次数，记录里带 `extra_columns`，严格口径随时能算。问"差几单"时把两段各自的订单数也给出来，
   对用户没有坏处（[详情](docs/实验记录.md#时间差和多返回的列)）
+- **探针一键回归**：改了提示词、元数据之后跑 `python -m eval.probe_regression`：全部 147 道探针每题 3 次，
+  6 个进程并行，约 14 分钟；按批次汇总，逐题和上一次完整运行比，列出通过率掉一半以上的题。题面或参考答案
+  改过的题不比。要调真实模型，CI 里跑不了（[详情](docs/实验记录.md#探针一键回归)）
 - **分指标统计**：首轮检索召回、Schema 召回（含兜底）、执行准确率、陷阱题诚实率、端到端，
   分开看才知道错在哪一环
 - **`--repeat`**：关键词抽取不确定，单次运行有约 ±5% 波动，按多数判定
