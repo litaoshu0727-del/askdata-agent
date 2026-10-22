@@ -56,6 +56,7 @@ DATABASE_NAMES = {
     "ecommerce": "ecommerce_db",
     "ecommerce_big": "ecommerce_big_db",
     "chinook": "chinook_db",
+    "sakila": "sakila_db",
     "trade": "trade_db",
 }
 
@@ -74,6 +75,13 @@ SAMPLE_QUESTIONS = {
         "发票金额合计最高的 3 个国家是哪些",
         "它们各有多少位客户",
         "每位客户的年龄是多少岁",
+    ],
+    "sakila": [
+        "每家门店各有多少位客户",
+        "租借次数最多的 5 部影片是哪些，各租了多少次",
+        "每个影片分类的营业额是多少",
+        "它们各有多少部影片",
+        "每部影片的豆瓣评分是多少",
     ],
     "trade": [
         "查询总交易笔数大于50000的利率是多少",

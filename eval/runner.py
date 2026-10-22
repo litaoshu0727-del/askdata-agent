@@ -54,6 +54,8 @@ DATASETS = {
     "chinook": (CHINOOK_CASES, "chinook_db", Path("runtime_data") / "chinook.db"),
     # 电商库 + 12 个干扰域（1076 个字段）。电商 11 张表逐行一致，电商的题答案不变。
     "ecommerce_big": (ALL_CASES, "ecommerce_big_db", Path("runtime_data") / "eval_ecommerce_big.db"),
+    # 第三个库，验证泛化用：没有调优用的主题库，题只在留出集里（见 askdata_pipeline/sakila_data.py）。
+    "sakila": ([], "sakila_db", Path("runtime_data") / "sakila.db"),
 }
 
 # 留出集按数据集名分；大库沿用电商的题
@@ -1246,7 +1248,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dataset", default="ecommerce", choices=sorted(DATASETS),
-        help="评测哪个数据集。chinook 是外部 Schema，我没参与设计",
+        help="评测哪个数据集。chinook、sakila 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
         "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "probes"],

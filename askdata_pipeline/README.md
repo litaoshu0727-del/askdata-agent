@@ -36,6 +36,7 @@ print(response.decision.route.value, response.answer)
 | `result_shape.py` | 结果形状检查：问题只要一个数、结果却有多行（两层聚合压成一层），就带提示重新生成一次 |
 | `conversation_service.py` | 多轮会话编排 |
 | `ecommerce_data.py` `chinook_data.py` `demo_data.py` | 三个数据集的建库与业务元数据 |
+| `sakila_data.py` | 第三个库 Sakila（DVD 租赁），验证泛化用：从 jOOQ 的 SQLite 脚本建库，元数据先于题目写好 |
 | `local_clients.py` | 无 Key 时的 Mock 关键词抽取与向量 |
 | `objects.py` | `PipelineConfig`、`PipelineResult` 等数据结构 |
 

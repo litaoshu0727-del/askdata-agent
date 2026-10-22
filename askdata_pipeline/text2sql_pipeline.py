@@ -30,6 +30,7 @@ from .chinook_data import (
     get_chinook_business_meta,
 )
 from .bigdb_data import create_ecommerce_big_database, get_ecommerce_big_business_meta
+from .sakila_data import create_sakila_database, get_sakila_business_meta
 from .ecommerce_data import (
     create_ecommerce_demo_database,
     get_ecommerce_business_meta,
@@ -816,8 +817,15 @@ class AskDataText2SQLPipeline:
                 get_chinook_business_meta(),
             )
 
+        if dataset == "sakila":
+            # 第三个库，验证泛化：元数据先写、先提交，再盲写题。
+            return (
+                create_sakila_database(self.config.db_path),
+                get_sakila_business_meta(),
+            )
+
         raise ValueError(
-            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce / ecommerce_big / chinook。"
+            f"未知的 dataset：{self.config.dataset}。可选值：trade / ecommerce / ecommerce_big / chinook / sakila。"
         )
 
     def _build_keyword_extractor(self):
