@@ -20,7 +20,7 @@ from pathlib import Path  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest, TableColumn, TableSchema  # noqa: E402
-from sql_generation.prompt_builder import SqlPromptBuilder  # noqa: E402
+from sql_generation.prompt_builder import SQLITE_RULES, SqlPromptBuilder  # noqa: E402
 
 
 class SqlPromptRulesTestCase(unittest.TestCase):
@@ -47,6 +47,12 @@ class SqlPromptRulesTestCase(unittest.TestCase):
             "生成": builder.build(request),
             "修正": builder.build_repair(request, failed_sql="SELECT 1", error="no such column: x"),
         }
+
+    def test_both_prompts_share_one_copy_of_the_rules(self):
+        """两份提示词原先各抄一份规则，改一处容易忘了另一处；现在共用 SQLITE_RULES。"""
+        for name, prompt in self.prompts.items():
+            with self.subTest(提示词=name):
+                self.assertIn(SQLITE_RULES, prompt)
 
     def test_integer_division_rule_in_both_prompts(self):
         """H3E14：SUM(下单笔数) / COUNT(用户) 被截断成整数，三个版本 9 次里错了 6 次。"""

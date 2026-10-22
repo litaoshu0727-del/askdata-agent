@@ -24,8 +24,11 @@ python -m sql_generation.sql_generation_demo
 日期区间不要写成字符串 `BETWEEN`、日期字面量用 `YYYY-MM-DD`、整数相除先乘 1.0、跨表比例
 各自用子查询、一对多连接之后不直接数主表的笔数或加主表的金额、每组前 N 用窗口函数编号再在外层筛、
 窗口函数的结果不在同一层 WHERE 里用、时间差用整数秒比、"全都是同一个 X"不把 X 放进分组、挂在订单上的
-退款支付按明细维度汇总前先给明细去重。生成和修正两份提示词都要有，
-改的时候两处一起改，[tests/test_sql_prompt.py](../tests/test_sql_prompt.py) 会检查。见
+退款支付按明细维度汇总前先给明细去重。这些规则分成时间、整数相除、聚合粒度、窗口函数四组，放在
+`SQLITE_RULES` 里，生成和修正两份提示词共用一份（原先各抄一份，改一处容易忘了另一处）；
+[tests/test_sql_prompt.py](../tests/test_sql_prompt.py) 检查两份都有。改了规则之后跑
+`python -m eval.probe_regression`，和上一次比探针有没有退步。见
+[整理 SQL 规则](../docs/实验记录.md#整理-sql-规则)、
 [SQL 生成看不到样例值](../docs/实验记录.md#sql-生成看不到样例值)、
 [整数相除，和跨表比例](../docs/实验记录.md#整数相除和跨表比例)、
 [一对多连接](../docs/实验记录.md#一对多连接订单被数了几遍)、
