@@ -29,12 +29,16 @@
                      JC1–JC2       对照：不带修饰的订单数不加条件；点名状态的按题面
     探针:口径二      J05–J08       口径写进元数据之后才写
                      JC3–JC5       对照
+    探针:全称        A01–A11       "那些 X 全都 / 一个都没有……"（第八套之后）；A01–A06 电商，A07–A11 Chinook
+                     A12–A19       补的：X 的集合和条件在两张表里，要逐对反连接再整体否定（A01、H8E16 的结构）
+                     AC1–AC5       对照：问的本来就是"至少有一个"
+                                   这一批量过两版 SQL 规则，都没有收益，规则撤掉了；探针留作测量
 
 口径定下来时，F03、F04、F06、G02、G05、M01、K01、K05、L01、K11 的参考答案（和错误写法）改成了只算已付款的订单：
 它们原先默认算全部订单，和定下的口径不一致。改之前的版本留在 git 历史里，之前记录的这几道题的分数是按旧参考答案量的。
 
 每道"该出错"的题在 WRONG_SQL 里附一条错误写法：整数相除的那几批是把参考 SQL 的
-`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440；全都是同一个 X 的是把 X 也放进 GROUP BY；挂单的是直接连明细再 SUM。窗口筛选的题
+`* 1.0`、`100.0` 去掉；一对多的是直接连接之后再统计；每组前 N 的是不在组内截断；时间差的是 julianday 相减再乘 24 / 1440；全都是同一个 X 的是把 X 也放进 GROUP BY；挂单的是直接连明细再 SUM；全称的是逐对判断、有一个满足就算（存在量词）。窗口筛选的题
 没有错误写法：它们的失败是 SQL 报错（外层看不到内层的列、WHERE 里用了窗口函数）。tests/test_probes.py 检查错误写法
 的答案和参考答案确实不同——否则这道探针区分不出规则有没有起作用。对照题没有错误写法，
 它们用来确认规则没把模型带偏。
@@ -43,7 +47,7 @@
     python -m eval.runner --bank probes --dataset chinook --repeat 3
 
 整数除法两批原先只存在临时目录里，被系统清理了，从当时的会话记录里原样找回。
-结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」「全都是同一个 X，和挂在订单上的退款」。
+结果见 docs/实验记录.md「整数相除，和跨表比例」「一对多连接：订单被数了几遍」「每组前 N，和修正看不懂的报错」「时间差：正好 1 小时被算成超过 1 小时」「全都是同一个 X，和挂在订单上的退款」「口径漂移」「全称：一个都没有写成有一个没有」。
 """
 
 from eval.cases import EvalCase
@@ -2082,6 +2086,463 @@ KOUJING_WRONG_SQL = {
     ),
 }
 
+# ---------------------------------------------------------------------------
+# 全称（第八套之后）："那些 X 全都 / 一个都没有……"要对每个对象检查它名下的全部 X，模型常写成
+# "存在一个 X 不满足"——按（对象, X）逐对判断，有一对成立就把对象算进来（H8E16）。
+# WRONG_SQL 就是这种逐对、存在量词的写法。
+# ---------------------------------------------------------------------------
+
+_ALL_ECOMMERCE = [
+    EvalCase(
+        id="A01",
+        query="加购过商品、但加购的那些商品一件都没买过的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*) FROM dim_user u"
+            " WHERE EXISTS (SELECT 1 FROM fact_user_behavior b WHERE b.user_id = u.user_id AND b.behavior_type = '加购')"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM fact_user_behavior b"
+            "   JOIN fact_order_item i ON i.product_id = b.product_id"
+            "   JOIN fact_order o ON o.order_id = i.order_id AND o.user_id = b.user_id"
+            "   WHERE b.user_id = u.user_id AND b.behavior_type = '加购' AND o.pay_time IS NOT NULL)"
+        ),
+        must_hit_columns=["fact_user_behavior.behavior_type", "fact_order_item.product_id", "fact_order.pay_time"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A02",
+        query="下过的订单全都付了款的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*) FROM ("
+            " SELECT user_id FROM fact_order GROUP BY user_id HAVING SUM(pay_time IS NULL) = 0)"
+        ),
+        must_hit_columns=["fact_order.pay_time", "fact_order.user_id"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A03",
+        query="买过东西、但名下一笔订单都没申请过退款的用户，按会员等级各有多少位？列出会员等级和人数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(*) FROM dim_user u"
+            " WHERE EXISTS (SELECT 1 FROM fact_order o WHERE o.user_id = u.user_id AND o.pay_time IS NOT NULL)"
+            " AND NOT EXISTS (SELECT 1 FROM fact_order o JOIN fact_refund r ON r.order_id = o.order_id WHERE o.user_id = u.user_id)"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level", "fact_refund.order_id", "fact_order.pay_time"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A04",
+        query="店里的商品全都在售的店铺有哪些？列出店铺名。",
+        reference_sql=(
+            "SELECT s.shop_name FROM dim_shop s"
+            " JOIN dim_product p ON p.shop_id = s.shop_id"
+            " GROUP BY s.shop_id, s.shop_name"
+            " HAVING SUM(p.shelf_status <> '在售') = 0"
+        ),
+        must_hit_columns=["dim_shop.shop_name", "dim_product.shelf_status"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A05",
+        query="收藏过的商品全都已经下架了的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*) FROM ("
+            " SELECT b.user_id FROM fact_user_behavior b JOIN dim_product p ON p.product_id = b.product_id"
+            " WHERE b.behavior_type = '收藏'"
+            " GROUP BY b.user_id HAVING SUM(p.shelf_status <> '已下架') = 0)"
+        ),
+        must_hit_columns=["fact_user_behavior.behavior_type", "dim_product.shelf_status"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A06",
+        query="付过款的订单，每一笔实付金额都超过 500 元的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*) FROM ("
+            " SELECT user_id FROM fact_order WHERE pay_time IS NOT NULL"
+            " GROUP BY user_id HAVING MIN(pay_amount) > 500)"
+        ),
+        must_hit_columns=["fact_order.pay_amount", "fact_order.pay_time"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="AC1",
+        query="至少有一件加购的商品还没买过的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT b.user_id) FROM fact_user_behavior b"
+            " WHERE b.behavior_type = '加购' AND NOT EXISTS ("
+            "   SELECT 1 FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id"
+            "   WHERE o.user_id = b.user_id AND i.product_id = b.product_id AND o.pay_time IS NOT NULL)"
+        ),
+        must_hit_columns=["fact_user_behavior.behavior_type", "fact_order_item.product_id", "fact_order.pay_time"],
+        tags=["探针:全称", "对照"],
+    ),
+    EvalCase(
+        id="AC3",
+        query="有订单还没付款的用户有多少位？",
+        reference_sql="SELECT COUNT(DISTINCT user_id) FROM fact_order WHERE pay_time IS NULL",
+        must_hit_columns=["fact_order.pay_time"],
+        tags=["探针:全称", "对照"],
+    ),
+    EvalCase(
+        id="A12",
+        query="收藏过商品、而且收藏的商品全都买过的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM dim_user u"
+            " WHERE EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '收藏')"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '收藏'"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM fact_order_item i"
+            " JOIN fact_order o ON o.order_id = i.order_id"
+            " WHERE o.user_id = b.user_id AND i.product_id = b.product_id AND o.pay_time IS NOT NULL))"
+        ),
+        must_hit_columns=["fact_user_behavior.behavior_type", "fact_order_item.product_id", "fact_order.pay_time"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A13",
+        query="浏览过商品、但浏览过的商品一件都没加购过的用户，按性别各有多少位？列出性别和人数。",
+        reference_sql=(
+            "SELECT u.gender, COUNT(*)"
+            " FROM dim_user u"
+            " WHERE EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '浏览')"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " JOIN fact_user_behavior c ON c.user_id = b.user_id AND c.product_id = b.product_id AND c.behavior_type = '加购'"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '浏览')"
+            " GROUP BY u.gender"
+        ),
+        must_hit_columns=["dim_user.gender", "fact_user_behavior.behavior_type", "fact_user_behavior.product_id"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A14",
+        query="店里的商品全都被人收藏过的店铺有几家？",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM dim_shop s"
+            " WHERE EXISTS (SELECT 1"
+            " FROM dim_product p"
+            " WHERE p.shop_id = s.shop_id)"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM dim_product p"
+            " WHERE p.shop_id = s.shop_id"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " WHERE b.product_id = p.product_id AND b.behavior_type = '收藏'))"
+        ),
+        must_hit_columns=["dim_product.shop_id", "fact_user_behavior.behavior_type"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A15",
+        query="加购过商品、但加购的商品一件都没收藏过的用户，按会员等级各有多少位？列出会员等级和人数。",
+        reference_sql=(
+            "SELECT u.member_level, COUNT(*)"
+            " FROM dim_user u"
+            " WHERE EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '加购')"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM fact_user_behavior b"
+            " JOIN fact_user_behavior c ON c.user_id = b.user_id AND c.product_id = b.product_id AND c.behavior_type = '收藏'"
+            " WHERE b.user_id = u.user_id AND b.behavior_type = '加购')"
+            " GROUP BY u.member_level"
+        ),
+        must_hit_columns=["dim_user.member_level", "fact_user_behavior.behavior_type", "fact_user_behavior.product_id"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="AC4",
+        query="至少有一件收藏的商品已经买过的用户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT b.user_id)"
+            " FROM fact_user_behavior b"
+            " WHERE b.behavior_type = '收藏'"
+            " AND EXISTS (SELECT 1"
+            " FROM fact_order_item i"
+            " JOIN fact_order o ON o.order_id = i.order_id"
+            " WHERE o.user_id = b.user_id AND i.product_id = b.product_id AND o.pay_time IS NOT NULL)"
+        ),
+        must_hit_columns=["fact_user_behavior.behavior_type", "fact_order_item.product_id", "fact_order.pay_time"],
+        tags=["探针:全称", "对照"],
+    ),
+]
+
+_ALL_CHINOOK = [
+    EvalCase(
+        id="A07",
+        query="有曲目、但一首 Rock 流派的曲目都没有的歌单有哪些？列出歌单编号和名称。",
+        reference_sql=(
+            "SELECT p.PlaylistId, p.Name FROM Playlist p"
+            " WHERE EXISTS (SELECT 1 FROM PlaylistTrack pt WHERE pt.PlaylistId = p.PlaylistId)"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM PlaylistTrack pt JOIN Track t ON t.TrackId = pt.TrackId JOIN Genre g ON g.GenreId = t.GenreId"
+            "   WHERE pt.PlaylistId = p.PlaylistId AND g.Name = 'Rock')"
+        ),
+        must_hit_columns=["Playlist.Name", "PlaylistTrack.TrackId", "Genre.Name"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A08",
+        query="买过的曲目全都是 MPEG audio file 格式的客户有多少位？",
+        reference_sql=(
+            "SELECT COUNT(*) FROM ("
+            " SELECT i.CustomerId FROM Invoice i"
+            " JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+            " JOIN Track t ON t.TrackId = l.TrackId"
+            " JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId"
+            " GROUP BY i.CustomerId HAVING SUM(m.Name <> 'MPEG audio file') = 0)"
+        ),
+        must_hit_columns=["MediaType.Name", "InvoiceLine.TrackId", "Invoice.CustomerId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A09",
+        query="没有一张发票金额超过 15 的客户有多少位？",
+        reference_sql="SELECT COUNT(*) FROM (SELECT CustomerId FROM Invoice GROUP BY CustomerId HAVING MAX(Total) <= 15)",
+        must_hit_columns=["Invoice.Total", "Invoice.CustomerId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A10",
+        query="每首曲目都超过 300000 毫秒的专辑有多少张？",
+        reference_sql="SELECT COUNT(*) FROM (SELECT AlbumId FROM Track GROUP BY AlbumId HAVING MIN(Milliseconds) > 300000)",
+        must_hit_columns=["Track.Milliseconds", "Track.AlbumId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A11",
+        query="买过的曲目里一首 Jazz 流派的都没有的客户，按负责他们的销售支持员工各有多少位？列出员工的名、姓和客户数。",
+        reference_sql=(
+            "SELECT e.FirstName, e.LastName, COUNT(*) FROM Customer c"
+            " JOIN Employee e ON e.EmployeeId = c.SupportRepId"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM Invoice i JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+            "   JOIN Track t ON t.TrackId = l.TrackId JOIN Genre g ON g.GenreId = t.GenreId"
+            "   WHERE i.CustomerId = c.CustomerId AND g.Name = 'Jazz')"
+            " GROUP BY e.EmployeeId, e.FirstName, e.LastName"
+        ),
+        must_hit_columns=["Customer.SupportRepId", "Genre.Name", "Employee.FirstName"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="AC2",
+        query="有 Rock 流派曲目的歌单有多少个？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT pt.PlaylistId) FROM PlaylistTrack pt"
+            " JOIN Track t ON t.TrackId = pt.TrackId JOIN Genre g ON g.GenreId = t.GenreId"
+            " WHERE g.Name = 'Rock'"
+        ),
+        must_hit_columns=["PlaylistTrack.PlaylistId", "Genre.Name"],
+        tags=["探针:全称", "对照"],
+    ),
+    EvalCase(
+        id="A16",
+        query="有曲目、但里面的曲目一首都没卖出去过的歌单有哪些？列出歌单编号和名称。",
+        reference_sql=(
+            "SELECT p.PlaylistId, p.Name"
+            " FROM Playlist p"
+            " WHERE EXISTS (SELECT 1"
+            " FROM PlaylistTrack pt"
+            " WHERE pt.PlaylistId = p.PlaylistId)"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM PlaylistTrack pt"
+            " JOIN InvoiceLine l ON l.TrackId = pt.TrackId"
+            " WHERE pt.PlaylistId = p.PlaylistId)"
+        ),
+        must_hit_columns=["Playlist.Name", "PlaylistTrack.TrackId", "InvoiceLine.TrackId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A17",
+        query="里面的曲目全都卖出去过的专辑有多少张？",
+        reference_sql=(
+            "SELECT COUNT(*)"
+            " FROM Album a"
+            " WHERE NOT EXISTS (SELECT 1"
+            " FROM Track t"
+            " WHERE t.AlbumId = a.AlbumId"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM InvoiceLine l"
+            " WHERE l.TrackId = t.TrackId))"
+        ),
+        must_hit_columns=["Track.AlbumId", "InvoiceLine.TrackId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A18",
+        query="有曲目、但曲目一首都没卖出去过的艺术家有哪些？列出艺术家名称。",
+        reference_sql=(
+            "SELECT ar.Name"
+            " FROM Artist ar"
+            " WHERE EXISTS (SELECT 1"
+            " FROM Album a"
+            " JOIN Track t ON t.AlbumId = a.AlbumId"
+            " WHERE a.ArtistId = ar.ArtistId)"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM Album a"
+            " JOIN Track t ON t.AlbumId = a.AlbumId"
+            " JOIN InvoiceLine l ON l.TrackId = t.TrackId"
+            " WHERE a.ArtistId = ar.ArtistId)"
+        ),
+        must_hit_columns=["Artist.Name", "Album.ArtistId", "InvoiceLine.TrackId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="A19",
+        query="这个国家的每一位客户都买过 Jazz 流派曲目的国家有哪些？列出国家。",
+        reference_sql=(
+            "SELECT DISTINCT c0.Country"
+            " FROM Customer c0"
+            " WHERE NOT EXISTS (SELECT 1"
+            " FROM Customer c"
+            " WHERE c.Country = c0.Country"
+            " AND NOT EXISTS (SELECT 1"
+            " FROM Invoice i"
+            " JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+            " JOIN Track t ON t.TrackId = l.TrackId"
+            " JOIN Genre g ON g.GenreId = t.GenreId"
+            " WHERE i.CustomerId = c.CustomerId AND g.Name = 'Jazz'))"
+        ),
+        must_hit_columns=["Customer.Country", "Genre.Name", "InvoiceLine.TrackId"],
+        tags=["探针:全称"],
+    ),
+    EvalCase(
+        id="AC5",
+        query="有曲目卖出去过的专辑有多少张？",
+        reference_sql=(
+            "SELECT COUNT(DISTINCT t.AlbumId)"
+            " FROM Track t"
+            " JOIN InvoiceLine l ON l.TrackId = t.TrackId"
+        ),
+        must_hit_columns=["Track.AlbumId", "InvoiceLine.TrackId"],
+        tags=["探针:全称", "对照"],
+    ),
+]
+
+ALL_WRONG_SQL = {
+    "A01": (
+        "SELECT COUNT(DISTINCT b.user_id) FROM fact_user_behavior b"
+        " WHERE b.behavior_type = '加购' AND NOT EXISTS ("
+        "   SELECT 1 FROM fact_order_item i JOIN fact_order o ON o.order_id = i.order_id"
+        "   WHERE o.user_id = b.user_id AND i.product_id = b.product_id AND o.pay_time IS NOT NULL)"
+    ),
+    "A02": "SELECT COUNT(DISTINCT user_id) FROM fact_order WHERE pay_time IS NOT NULL",
+    "A03": (
+        "SELECT u.member_level, COUNT(DISTINCT u.user_id) FROM dim_user u"
+        " JOIN fact_order o ON o.user_id = u.user_id"
+        " WHERE o.pay_time IS NOT NULL AND NOT EXISTS (SELECT 1 FROM fact_refund r WHERE r.order_id = o.order_id)"
+        " GROUP BY u.member_level"
+    ),
+    "A04": (
+        "SELECT DISTINCT s.shop_name FROM dim_shop s"
+        " JOIN dim_product p ON p.shop_id = s.shop_id WHERE p.shelf_status = '在售'"
+    ),
+    "A05": (
+        "SELECT COUNT(DISTINCT b.user_id) FROM fact_user_behavior b JOIN dim_product p ON p.product_id = b.product_id"
+        " WHERE b.behavior_type = '收藏' AND p.shelf_status = '已下架'"
+    ),
+    "A06": "SELECT COUNT(DISTINCT user_id) FROM fact_order WHERE pay_time IS NOT NULL AND pay_amount > 500",
+    "A07": (
+        "SELECT DISTINCT p.PlaylistId, p.Name FROM Playlist p"
+        " JOIN PlaylistTrack pt ON pt.PlaylistId = p.PlaylistId"
+        " JOIN Track t ON t.TrackId = pt.TrackId JOIN Genre g ON g.GenreId = t.GenreId"
+        " WHERE g.Name <> 'Rock'"
+    ),
+    "A08": (
+        "SELECT COUNT(DISTINCT i.CustomerId) FROM Invoice i"
+        " JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+        " JOIN Track t ON t.TrackId = l.TrackId"
+        " JOIN MediaType m ON m.MediaTypeId = t.MediaTypeId"
+        " WHERE m.Name = 'MPEG audio file'"
+    ),
+    "A09": "SELECT COUNT(DISTINCT CustomerId) FROM Invoice WHERE Total <= 15",
+    "A10": "SELECT COUNT(DISTINCT AlbumId) FROM Track WHERE Milliseconds > 300000",
+    "A11": (
+        "SELECT e.FirstName, e.LastName, COUNT(DISTINCT c.CustomerId) FROM Customer c"
+        " JOIN Employee e ON e.EmployeeId = c.SupportRepId"
+        " JOIN Invoice i ON i.CustomerId = c.CustomerId"
+        " JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+        " JOIN Track t ON t.TrackId = l.TrackId JOIN Genre g ON g.GenreId = t.GenreId"
+        " WHERE g.Name <> 'Jazz'"
+        " GROUP BY e.EmployeeId, e.FirstName, e.LastName"
+    ),
+    "A12": (
+        "SELECT COUNT(DISTINCT b.user_id)"
+        " FROM fact_user_behavior b"
+        " WHERE b.behavior_type = '收藏'"
+        " AND EXISTS (SELECT 1"
+        " FROM fact_order_item i"
+        " JOIN fact_order o ON o.order_id = i.order_id"
+        " WHERE o.user_id = b.user_id AND i.product_id = b.product_id AND o.pay_time IS NOT NULL)"
+    ),
+    "A13": (
+        "SELECT u.gender, COUNT(DISTINCT b.user_id)"
+        " FROM fact_user_behavior b"
+        " JOIN dim_user u ON u.user_id = b.user_id"
+        " WHERE b.behavior_type = '浏览'"
+        " AND NOT EXISTS (SELECT 1"
+        " FROM fact_user_behavior c"
+        " WHERE c.user_id = b.user_id AND c.product_id = b.product_id AND c.behavior_type = '加购')"
+        " GROUP BY u.gender"
+    ),
+    "A14": (
+        "SELECT COUNT(DISTINCT p.shop_id)"
+        " FROM dim_product p"
+        " JOIN fact_user_behavior b ON b.product_id = p.product_id"
+        " WHERE b.behavior_type = '收藏'"
+    ),
+    "A15": (
+        "SELECT u.member_level, COUNT(DISTINCT b.user_id)"
+        " FROM fact_user_behavior b"
+        " JOIN dim_user u ON u.user_id = b.user_id"
+        " WHERE b.behavior_type = '加购'"
+        " AND NOT EXISTS (SELECT 1"
+        " FROM fact_user_behavior c"
+        " WHERE c.user_id = b.user_id AND c.product_id = b.product_id AND c.behavior_type = '收藏')"
+        " GROUP BY u.member_level"
+    ),
+    "A16": (
+        "SELECT DISTINCT p.PlaylistId, p.Name"
+        " FROM Playlist p"
+        " JOIN PlaylistTrack pt ON pt.PlaylistId = p.PlaylistId"
+        " WHERE NOT EXISTS (SELECT 1"
+        " FROM InvoiceLine l"
+        " WHERE l.TrackId = pt.TrackId)"
+    ),
+    "A17": (
+        "SELECT COUNT(DISTINCT t.AlbumId)"
+        " FROM Track t"
+        " JOIN InvoiceLine l ON l.TrackId = t.TrackId"
+    ),
+    "A18": (
+        "SELECT DISTINCT ar.Name"
+        " FROM Artist ar"
+        " JOIN Album a ON a.ArtistId = ar.ArtistId"
+        " JOIN Track t ON t.AlbumId = a.AlbumId"
+        " WHERE NOT EXISTS (SELECT 1"
+        " FROM InvoiceLine l"
+        " WHERE l.TrackId = t.TrackId)"
+    ),
+    "A19": (
+        "SELECT DISTINCT c.Country"
+        " FROM Customer c"
+        " JOIN Invoice i ON i.CustomerId = c.CustomerId"
+        " JOIN InvoiceLine l ON l.InvoiceId = i.InvoiceId"
+        " JOIN Track t ON t.TrackId = l.TrackId"
+        " JOIN Genre g ON g.GenreId = t.GenreId"
+        " WHERE g.Name = 'Jazz'"
+    ),
+}
+
 
 WRONG_SQL = {
     **{case.id: _integer_division(case.reference_sql) for case in _INT_DIV_ECOMMERCE + _INT_DIV_CHINOOK},
@@ -2090,9 +2551,10 @@ WRONG_SQL = {
     **TIME_DIFF_WRONG_SQL,
     **UNIQ_WRONG_SQL,
     **KOUJING_WRONG_SQL,
+    **ALL_WRONG_SQL,
 }
 
 PROBE_BANKS = {
-    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE + _UNIQ_ECOMMERCE + _KOUJING_ECOMMERCE,
-    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK + _UNIQ_CHINOOK,
+    "ecommerce": _INT_DIV_ECOMMERCE + _FAN_OUT_ECOMMERCE + _TOPN_ECOMMERCE + _TIME_DIFF_ECOMMERCE + _UNIQ_ECOMMERCE + _KOUJING_ECOMMERCE + _ALL_ECOMMERCE,
+    "chinook": _INT_DIV_CHINOOK + _FAN_OUT_CHINOOK + _TOPN_CHINOOK + _UNIQ_CHINOOK + _ALL_CHINOOK,
 }
