@@ -54,6 +54,21 @@ class SqlPromptRulesTestCase(unittest.TestCase):
             with self.subTest(提示词=name):
                 self.assertIn(SQLITE_RULES, prompt)
 
+    def test_rules_can_be_left_out_for_ablation(self):
+        """--sql-rules off：两份提示词都不放 SQLite 写法，其余不变；修正提示的报错分析还在。"""
+        builder = SqlPromptBuilder(include_rules=False)
+        request = SqlGenerationRequest(
+            cot_step=CotStep(database="db", processing_objects="t.a", operation_instruction="求平均", output_target="t.a"),
+            local_schema=LocalSchema(), sql_dialect="SQLite",
+        )
+        prompts = {"生成": builder.build(request),
+                   "修正": builder.build_repair(request, failed_sql="SELECT 1", error="no such column: x")}
+        for name, prompt in prompts.items():
+            with self.subTest(提示词=name):
+                self.assertNotIn("# SQLite 写法", prompt)
+                self.assertNotIn(SQLITE_RULES, prompt)
+                self.assertEqual(prompt, self.prompts[name].replace(f"\n# SQLite 写法\n{SQLITE_RULES}\n", ""))
+
     def test_integer_division_rule_in_both_prompts(self):
         """H3E14：SUM(下单笔数) / COUNT(用户) 被截断成整数，三个版本 9 次里错了 6 次。"""
         for name, prompt in self.prompts.items():

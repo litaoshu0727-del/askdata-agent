@@ -20,6 +20,7 @@ from sql_generation import (
     CotStep,
     LocalSchemaStore,
     SqlGenerator,
+    SqlPromptBuilder,
 )
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
@@ -260,6 +261,7 @@ class AskDataText2SQLPipeline:
 
         sql_generator = SqlGenerator(
             schema_store=schema_store,
+            prompt_builder=SqlPromptBuilder(include_rules=self.config.sqlite_rules),
             coder_client=CoderModelClient(
                 CoderModelConfig(
                     use_mock_when_no_api_key=True,

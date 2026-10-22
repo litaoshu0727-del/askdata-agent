@@ -74,7 +74,15 @@ class SqlPromptBuilder:
       失败加的：模型在原始行上编号、外层再 SUM。第二条是第二版之后补的：修好了作用域，又在 WHERE 里写 LAG(...)。
       探针上这几类失败 8 → 1 次（两批 31 道）。
     - 修正提示的「报错分析」（_error_analysis）也来自第六套：见下。
+    - include_rules=False 时两份提示词都不放 SQLite 写法，只用于消融（第九套：这些照着电商、Chinook 的失败写的
+      规则，换到没见过的库上还有没有用）。
     """
+
+    def __init__(self, include_rules: bool = True):
+        self.include_rules = include_rules
+
+    def _rules_section(self) -> str:
+        return f"\n# SQLite 写法\n{SQLITE_RULES}\n" if self.include_rules else ""
 
     def build(self, request: SqlGenerationRequest) -> str:
         """
@@ -89,10 +97,7 @@ class SqlPromptBuilder:
 1. 严格按照CoT中的操作指令写；只能使用Schema中提供的表、字段和表关联关系，不得编造。
 2. 只输出SQL语句本身：不输出解释，不输出Markdown代码块（不要```sql）。
 3. 表名直接写表名，不要加数据库名前缀。写 fact_order，不要写 xxx_db.fact_order。
-
-# SQLite 写法
-{SQLITE_RULES}
-
+{self._rules_section()}
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}
 操作指令：{cot_step.operation_instruction}
@@ -165,10 +170,7 @@ class SqlPromptBuilder:
 2. 只能使用Schema中提供的表、字段和表关联关系。
 3. 如果报错提示某个字段或表不存在，先看它在不在下面的Schema里：不在，就改用Schema里真实存在的字段，
    不要臆造，也不要沿用原来的写法；在，就是作用域问题，见最后的「报错分析」。
-
-# SQLite 写法
-{SQLITE_RULES}
-
+{self._rules_section()}
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}
 操作指令：{cot_step.operation_instruction}

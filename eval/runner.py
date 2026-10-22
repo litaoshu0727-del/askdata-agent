@@ -189,6 +189,17 @@ HOLDOUT8_BANKS = {
     "chinook": HOLDOUT8_CHINOOK_CASES,
 }
 
+# 第九套：Sakila，第三个库，验证泛化。元数据在出题之前写好提交；三组对照（完整、无元数据、无规则）。
+# 冻结后还没运行过。
+try:
+    from eval.cases_holdout9 import HOLDOUT9_SAKILA_CASES  # noqa: E402
+except ImportError:
+    HOLDOUT9_SAKILA_CASES = []
+
+HOLDOUT9_BANKS = {
+    "sakila": HOLDOUT9_SAKILA_CASES,
+}
+
 # 探针：对着一类已知的生成错误写的小题（整数相除、一对多连接），量规则、改规则时回归。
 # 不是留出集，分数不能当泛化证据。见 eval/cases_probes.py。
 from eval.cases_probes import PROBE_BANKS  # noqa: E402
@@ -202,6 +213,7 @@ BANKS = {
     "holdout6": HOLDOUT6_BANKS,
     "holdout7": HOLDOUT7_BANKS,
     "holdout8": HOLDOUT8_BANKS,
+    "holdout9": HOLDOUT9_BANKS,
     "probes": PROBE_BANKS,
 }
 
@@ -262,6 +274,18 @@ class RunRecorder:
 
     def close(self) -> None:
         self._file.close()
+
+
+def select_chunk(cases: Sequence[EvalCase], chunk: str) -> List[EvalCase]:
+    """
+    --chunk i/n：按题号顺序隔 n 道取一道，取第 i 份。几份合起来正好是整套，不重不漏。
+
+    一套题一个进程跑要半小时；电商库每建一次流水线都会删掉重建，拆进程跑时要给每个进程单独的 --db-path。
+    """
+    index, count = (int(part) for part in chunk.split("/"))
+    if not 0 <= index < count:
+        raise SystemExit(f"--chunk {chunk}：i 要在 0 到 n-1 之间")
+    return list(cases)[index::count]
 
 
 def git_revision() -> str:
@@ -1101,6 +1125,7 @@ def build_pipeline(args, database_name: str, db_path: Path, meta_mode: str):
             self_consistency_runs=args.self_consistency,
             sql_repair_attempts=args.repair,
             business_meta_mode=meta_mode,
+            sqlite_rules=getattr(args, "sql_rules", "on") != "off",
         )
     )
 
@@ -1228,6 +1253,11 @@ def report_ab(results: Dict[str, List[CaseAggregate]]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AskData 评测")
     parser.add_argument("--case", default="", help="只跑指定题号，例如 E03")
+    parser.add_argument(
+        "--sql-rules", default="on", choices=["on", "off"],
+        help="SQL 提示词里放不放 SQLite 写法。off 只用于消融：看照电商、Chinook 的失败写的规则换到新库上还有没有用",
+    )
+    parser.add_argument("--chunk", default="", help="i/n：只跑第 i 份（共 n 份，从 0 数），一套题拆给几个进程并行跑")
     parser.add_argument("--tag", default="", help="只跑指定考点")
     parser.add_argument("--retries", type=int, default=2, help="瞬时故障重试次数")
     parser.add_argument(
@@ -1251,7 +1281,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测哪个数据集。chinook、sakila 是外部 Schema，我没参与设计",
     )
     parser.add_argument(
-        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "probes"],
+        "--bank", default="main", choices=["main", "holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "holdout9", "probes"],
         help=(
             "题库。main 是调优用的主题库；holdout 是第一套盲写留出集（已封存）；"
             "holdout2 是第二套 Chinook 盲写留出集；holdout3 是第三套盲写留出集（ecommerce + Chinook）；"
@@ -1260,6 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
             "holdout6 是第六套，更难的一套（ecommerce + Chinook）；"
             "holdout7 是第七套，规范同第六套（ecommerce + Chinook）；"
             "holdout8 是第八套，题面可以靠口径约定（ecommerce + Chinook）；"
+            "holdout9 是第九套，Sakila，验证泛化（冻结后未运行）；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1303,6 +1334,8 @@ def main() -> None:
         cases = [item for item in cases if item.id.upper() == args.case.upper()]
     if args.tag:
         cases = [item for item in cases if args.tag in item.tags]
+    if args.chunk:
+        cases = select_chunk(cases, args.chunk)
 
     if not cases:
         print("没有匹配的题目")
@@ -1314,7 +1347,7 @@ def main() -> None:
 
     print("=" * 92)
     bank_label = {
-        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四", "holdout5": "　·　留出集五", "holdout6": "　·　留出集六", "holdout7": "　·　留出集七", "holdout8": "　·　留出集八",
+        "holdout": "　·　留出集", "holdout2": "　·　留出集二", "holdout3": "　·　留出集三", "holdout4": "　·　留出集四", "holdout5": "　·　留出集五", "holdout6": "　·　留出集六", "holdout7": "　·　留出集七", "holdout8": "　·　留出集八", "holdout9": "　·　留出集九",
         "probes": "　·　探针",
     }.get(args.bank, "")
     print(f"AskData 评测　·　{args.dataset}{bank_label}　·　{len(cases)} 题")
@@ -1328,6 +1361,8 @@ def main() -> None:
 
     if repeat > 1:
         print(f"每题重复 {repeat} 次（单次运行误差约 ±5%，重复取多数）")
+    if args.sql_rules == "off":
+        print("配置：SQL 提示词里不放 SQLite 写法（消融）")
     if args.self_consistency > 1 or args.repair != PipelineConfig.sql_repair_attempts:
         print(f"配置：自洽性投票 {args.self_consistency} 次，SQL 回调修正 {args.repair} 次")
 
@@ -1348,6 +1383,7 @@ def main() -> None:
             "bank": args.bank,
             "self_consistency": args.self_consistency,
             "repair": args.repair,
+            "sql_rules": args.sql_rules,
         })
         print(f"过程记录：{args.save_runs}（run_id {recorder.meta['run_id']}，"
               f"提交 {recorder.meta['commit']}）")

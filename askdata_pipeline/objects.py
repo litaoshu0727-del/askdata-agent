@@ -66,6 +66,12 @@ class PipelineConfig:
     chinook    —— 公开的音乐商店库，Schema 不是我设计的，用来做外部验证。
     """
 
+    sqlite_rules: bool = True
+    """
+    SQL 提示词里放不放 SQLite 写法（SQLITE_RULES）。只用于消融：那些规则是照着电商、Chinook 的失败写的，
+    False 时看它们换到没见过的库上还有没有用。
+    """
+
     business_meta_mode: str = "full"
     """
     业务元数据开关，full / none。

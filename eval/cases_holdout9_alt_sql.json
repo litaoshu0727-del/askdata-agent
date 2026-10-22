@@ -1,0 +1,5 @@
+{
+  "H9S31": [
+    "SELECT st.first_name, st.last_name, ROUND(SUM(p.amount), 2) AS total_collected FROM store s JOIN address a ON a.address_id = s.address_id JOIN city ci ON ci.city_id = a.city_id JOIN staff st ON st.store_id = s.store_id JOIN payment p ON p.staff_id = st.staff_id WHERE ci.city = 'Lethbridge' GROUP BY st.staff_id, st.first_name, st.last_name"
+  ]
+}
