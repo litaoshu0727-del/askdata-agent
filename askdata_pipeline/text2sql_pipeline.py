@@ -25,7 +25,7 @@ from sql_generation import (
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
 from .filter_guard import FilterValueGuard
-from .result_shape import single_value_mismatch
+from .result_shape import finer_grain_mismatch, single_value_mismatch
 from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
@@ -367,6 +367,38 @@ class AskDataText2SQLPipeline:
                 if retry_result.success and not still:
                     sql_result, execution_request, execution_result = retry, retry_request, retry_result
 
+            # 分组比题目要的细（第九套 H9S13：问客户数，数成了客户×日期的组合）。和形状检查一样只看最后一步、
+            # 只重新生成一次；形状检查已经改过的不再查。判定不解析 SQL，看最外层结构和执行结果，形态 A 要
+            # 单独跑一次子查询，走同一个只读执行器。
+            grain = (
+                finer_grain_mismatch(
+                    sql_result.sql, execution_result.columns, execution_result.rows or [],
+                    self._read_only_runner(execution_request),
+                )
+                if execution_result.success and not mismatch and cot_step is cot_result.steps[-1]
+                else None
+            )
+            if grain:
+                emit(
+                    Codes.RESULT_GRAIN_SUSPECT,
+                    "分组比题目要的细（数了组合、或同一个维度出现好几行），已带提示重新生成一次",
+                    行数=len(execution_result.rows or []),
+                    SQL=" ".join(sql_result.sql.split())[:120],
+                )
+                retry = sql_generator.repair(cot_step=sql_cot_step, failed_sql=sql_result.sql, error=grain)
+                retry_request = retry.to_execution_request()
+                retry_result = self.mcp_router.execute(retry_request)
+                trace.append(_trace_entry(
+                    attempt, guard_retry, full_schema, len(step_logs) + 1, "粒度修正",
+                    retry.sql, retry_result,
+                ))
+                still = retry_result.success and finer_grain_mismatch(
+                    retry.sql, retry_result.columns, retry_result.rows or [],
+                    self._read_only_runner(retry_request),
+                )
+                if retry_result.success and not still:
+                    sql_result, execution_request, execution_result = retry, retry_request, retry_result
+
             # SQL 跑通但一行都没返回，往往不是"确实没有数据"，
             # 而是筛选条件有问题——多轮追问里最常见的就是模型凭空推断了一个 ID。
             if execution_result.success and not execution_result.rows:
@@ -445,6 +477,18 @@ class AskDataText2SQLPipeline:
             )
 
         return cot_result, step_logs, schema_graph
+
+    def _read_only_runner(self, execution_request):
+        """粒度检查要单独跑一次子查询：走同一个只读执行器，跑不通就抛出，检查那边会当作不判。"""
+        database = execution_request["database"] if isinstance(execution_request, dict) else execution_request.database
+
+        def run(sql: str):
+            result = self.mcp_router.execute({"database": database, "sql": sql})
+            if not result.success:
+                raise RuntimeError(result.error or "子查询执行失败")
+            return result.rows or []
+
+        return run
 
     def _find_dropped_filters(self, guard_query: str, step_logs, schema_graph=None) -> list:
         """

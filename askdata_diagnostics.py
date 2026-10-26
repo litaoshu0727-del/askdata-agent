@@ -131,6 +131,13 @@ class Codes:
     已带提示重新生成一次；新结果仍然可疑时保留原结果。判定见 askdata_pipeline/result_shape.py。
     """
 
+    RESULT_GRAIN_SUSPECT = "RESULT_GRAIN_SUSPECT"
+    """
+    分组比题目要的细：外层 COUNT(*) 数的子查询里同一个对象出现好几次（问客户数，数成了客户×日期），
+    或者最外层分组后同一个维度出现好几行（GROUP BY 里多了没输出的列）。已带提示重新生成一次；
+    新结果仍然可疑时保留原结果。判定见 askdata_pipeline/result_shape.py。
+    """
+
     RESULT_TRUNCATED = "RESULT_TRUNCATED"
     """
     结果超过行数上限（PipelineConfig.max_result_rows），只保留了前面那些行。上限比评测库里
