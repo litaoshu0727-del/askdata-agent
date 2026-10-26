@@ -25,7 +25,7 @@ from sql_generation import (
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
 from .filter_guard import FilterValueGuard
-from .result_shape import finer_grain_mismatch, single_value_mismatch
+from .result_shape import finer_grain_mismatch, group_topn_overflow, single_value_mismatch, window_filtered_previous
 from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
@@ -340,64 +340,40 @@ class AskDataText2SQLPipeline:
                         报错=str(execution_result.error)[:80],
                     )
 
-            # 问题只要一个数、结果却有好几行：两层聚合压成了一层，SQL 能执行，修正碰不到它。
-            # 只看最后一步——多步规划里中间步骤返回多行是正常的。
-            mismatch = (
-                single_value_mismatch(guard_query, execution_result.columns, len(execution_result.rows or []))
-                if execution_result.success and cot_step is cot_result.steps[-1]
-                else None
-            )
-            if mismatch:
-                emit(
-                    Codes.RESULT_SHAPE_SUSPECT,
-                    "问题只要一个数，结果却有多行，已带提示重新生成一次",
-                    行数=len(execution_result.rows or []),
-                    SQL=" ".join(sql_result.sql.split())[:120],
-                )
-                retry = sql_generator.repair(cot_step=sql_cot_step, failed_sql=sql_result.sql, error=mismatch)
-                retry_request = retry.to_execution_request()
-                retry_result = self.mcp_router.execute(retry_request)
-                trace.append(_trace_entry(
-                    attempt, guard_retry, full_schema, len(step_logs) + 1, "形状修正",
-                    retry.sql, retry_result,
-                ))
-                still = retry_result.success and single_value_mismatch(
-                    guard_query, retry_result.columns, len(retry_result.rows or [])
-                )
-                if retry_result.success and not still:
-                    sql_result, execution_request, execution_result = retry, retry_request, retry_result
-
-            # 分组比题目要的细（第九套 H9S13：问客户数，数成了客户×日期的组合）。和形状检查一样只看最后一步、
-            # 只重新生成一次；形状检查已经改过的不再查。判定不解析 SQL，看最外层结构和执行结果，形态 A 要
-            # 单独跑一次子查询，走同一个只读执行器。
-            grain = (
-                finer_grain_mismatch(
-                    sql_result.sql, execution_result.columns, execution_result.rows or [],
-                    self._read_only_runner(execution_request),
-                )
-                if execution_result.success and not mismatch and cot_step is cot_result.steps[-1]
-                else None
-            )
-            if grain:
-                emit(
-                    Codes.RESULT_GRAIN_SUSPECT,
-                    "分组比题目要的细（数了组合、或同一个维度出现好几行），已带提示重新生成一次",
-                    行数=len(execution_result.rows or []),
-                    SQL=" ".join(sql_result.sql.split())[:120],
-                )
-                retry = sql_generator.repair(cot_step=sql_cot_step, failed_sql=sql_result.sql, error=grain)
-                retry_request = retry.to_execution_request()
-                retry_result = self.mcp_router.execute(retry_request)
-                trace.append(_trace_entry(
-                    attempt, guard_retry, full_schema, len(step_logs) + 1, "粒度修正",
-                    retry.sql, retry_result,
-                ))
-                still = retry_result.success and finer_grain_mismatch(
-                    retry.sql, retry_result.columns, retry_result.rows or [],
-                    self._read_only_runner(retry_request),
-                )
-                if retry_result.success and not still:
-                    sql_result, execution_request, execution_result = retry, retry_request, retry_result
+            # 结果检查：SQL 能执行、不报错，修正碰不到的几类错，按顺序查，第一项触发就带提示重新生成一次，
+            # 新结果不再可疑就采用，否则保留原结果；一道题最多重新生成一次。只看最后一步——多步规划里中间
+            # 步骤返回多行是正常的。判定都在 result_shape.py，不解析 SQL，看最外层结构和执行结果：
+            #   形状：问题只要一个数，结果却有好几行（两层聚合压成了一层，第六套）
+            #   粒度：数了组合没数对象、同一个维度出现好几行（第九套 H9S13、第七套 H7E21）
+            #   窗口：LAG / LEAD 和按时间筛选写在同一层，范围内第一期的上一期被筛掉了（H9S07、H8C02）
+            #   前 N：问每组前 N，结果的分组列某个值超过 N 行（H9S02）
+            post_checks = [
+                (Codes.RESULT_SHAPE_SUSPECT, "形状修正", "问题只要一个数，结果却有多行，已带提示重新生成一次",
+                 lambda sql, result, request: single_value_mismatch(guard_query, result.columns, len(result.rows or []))),
+                (Codes.RESULT_GRAIN_SUSPECT, "粒度修正", "分组比题目要的细（数了组合、或同一个维度出现好几行），已带提示重新生成一次",
+                 lambda sql, result, request: finer_grain_mismatch(
+                     sql, result.columns, result.rows or [], self._read_only_runner(request))),
+                (Codes.RESULT_WINDOW_SUSPECT, "窗口修正", "窗口函数和按时间筛选写在同一层，上一期被筛掉了，已带提示重新生成一次",
+                 lambda sql, result, request: window_filtered_previous(sql, result.columns, result.rows or [])),
+                (Codes.RESULT_TOPN_SUSPECT, "前N修正", "问每组前 N，结果的分组列超过了 N 行，已带提示重新生成一次",
+                 lambda sql, result, request: group_topn_overflow(guard_query, result.columns, result.rows or [])),
+            ]
+            if execution_result.success and cot_step is cot_result.steps[-1]:
+                for code, kind, message, judge in post_checks:
+                    hint = judge(sql_result.sql, execution_result, execution_request)
+                    if not hint:
+                        continue
+                    emit(code, message, 行数=len(execution_result.rows or []), SQL=" ".join(sql_result.sql.split())[:120])
+                    retry = sql_generator.repair(cot_step=sql_cot_step, failed_sql=sql_result.sql, error=hint)
+                    retry_request = retry.to_execution_request()
+                    retry_result = self.mcp_router.execute(retry_request)
+                    trace.append(_trace_entry(
+                        attempt, guard_retry, full_schema, len(step_logs) + 1, kind, retry.sql, retry_result,
+                    ))
+                    still = retry_result.success and judge(retry.sql, retry_result, retry_request)
+                    if retry_result.success and not still:
+                        sql_result, execution_request, execution_result = retry, retry_request, retry_result
+                    break
 
             # SQL 跑通但一行都没返回，往往不是"确实没有数据"，
             # 而是筛选条件有问题——多轮追问里最常见的就是模型凭空推断了一个 ID。

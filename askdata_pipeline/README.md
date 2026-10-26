@@ -33,7 +33,7 @@ print(response.decision.route.value, response.answer)
 | `dynamic_service.py` `routing.py` `data_qa.py` | 统一入口、路由判定、不查库的问答 |
 | `query_rewriter.py` | 指代消解：把"它们"改写成上一轮的具体对象 |
 | `filter_guard.py` | 筛选值守卫：问题提到的枚举取值 SQL 没用上，就带提示重规划 |
-| `result_shape.py` | 结果检查：问题只要一个数、结果却有多行（两层聚合压成一层）；分组比题目要的细（数了组合、同一个维度出现好几行）。可疑就带提示重新生成一次 |
+| `result_shape.py` | 结果检查，按顺序查：问题只要一个数、结果却有多行（两层聚合压成一层）；分组比题目要的细（数了组合、同一个维度出现好几行）；窗口函数的上一期被筛掉了；每组前 N 没截断。第一项触发就带提示重新生成一次 |
 | `conversation_service.py` | 多轮会话编排 |
 | `ecommerce_data.py` `chinook_data.py` `demo_data.py` | 三个数据集的建库与业务元数据 |
 | `sakila_data.py` | 第三个库 Sakila（DVD 租赁），验证泛化用：从 jOOQ 的 SQLite 脚本建库，元数据先于题目写好 |

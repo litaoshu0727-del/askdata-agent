@@ -138,6 +138,17 @@ class Codes:
     新结果仍然可疑时保留原结果。判定见 askdata_pipeline/result_shape.py。
     """
 
+    RESULT_WINDOW_SUSPECT = "RESULT_WINDOW_SUSPECT"
+    """
+    窗口函数（LAG / LEAD）和按它的排序列筛选的 WHERE 写在同一层：SQLite 先筛选再算窗口，范围内第一期的上一期
+    被筛掉了，结果里有空值。已带提示重新生成一次；新结果仍然可疑时保留原结果。
+    """
+
+    RESULT_TOPN_SUSPECT = "RESULT_TOPN_SUSPECT"
+    """
+    问每组前 N，结果的分组列（第一列）某个值超过 N 行：组内没截断。已带提示重新生成一次；新结果仍然可疑时保留原结果。
+    """
+
     RESULT_TRUNCATED = "RESULT_TRUNCATED"
     """
     结果超过行数上限（PipelineConfig.max_result_rows），只保留了前面那些行。上限比评测库里

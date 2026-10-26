@@ -241,3 +241,90 @@ def finer_grain_mismatch(sql: str, columns, rows, run_query) -> Optional[str]:
     if not sql:
         return None
     return _counts_finer_groups(sql, run_query) or _repeats_group_keys(sql, columns, rows)
+
+
+# ---------------------------------------------------------------------------
+# 窗口函数的上一期被筛掉了（H9S07、H8C02）："6–8 月每月营业额比上个月多多少"，
+#   SELECT month, amount - LAG(amount) OVER (ORDER BY month) FROM (按月汇总) WHERE month BETWEEN '2005-06' AND '2005-08'
+# SQLite 先做 WHERE 再算窗口：5 月被筛掉了，6 月的"上个月"不存在，变化成了空值。规则里点过名，模型照样写。
+# 判定：最外层 SELECT 里有 LAG / LEAD，最外层的 WHERE 按窗口的排序列筛选，结果里这一列有空值。
+# 只按别的列筛选（"1 号店每月比上月"）时不算——那时第一个月本来就没有上一期。
+# ---------------------------------------------------------------------------
+
+_WINDOW_SHIFT = re.compile(r"\b(LAG|LEAD)\s*\(", re.I)
+
+
+def _identifiers(expression: str) -> set:
+    return {name.lower() for name in re.findall(r"[A-Za-z_一-鿿][\w一-鿿]*", expression)}
+
+
+def window_filtered_previous(sql: str, columns, rows) -> Optional[str]:
+    """窗口函数和按时间筛选写在同一层、上一期被筛掉时，返回给修正提示用的说明；否则返回 None。"""
+    split = _split_main_query(sql or "")
+    if not split or "WHERE" not in split[1] or not rows:
+        return None
+    items = _select_items(sql)
+    if not items or len(items) != len(columns or []):
+        return None
+    where = _identifiers(split[1]["WHERE"])
+    for index, item in enumerate(items):
+        if not _WINDOW_SHIFT.search(item):
+            continue
+        orders = re.findall(r"OVER\s*\([^)]*?ORDER\s+BY\s+([^)]*?)\)", item, re.I | re.S)
+        keys = set()
+        for order in orders:
+            keys |= _identifiers(re.sub(r"\b(ASC|DESC|NULLS|FIRST|LAST)\b", " ", order, flags=re.I))
+        keys -= {"strftime", "date", "datetime", "substr", "cast", "as", "text", "integer"}
+        if not keys or not keys & where:
+            continue
+        name = columns[index]
+        values = [row[name] if isinstance(row, dict) else row[index] for row in rows]
+        if any(value is None for value in values):
+            return (
+                f"SQL 能执行，但 {name} 里有空值：窗口函数（LAG / LEAD）和按 {'、'.join(sorted(keys & where))} 筛选的 WHERE "
+                "写在了同一层。SQLite 先做 WHERE 再算窗口，范围外的上一期被筛掉了，范围内第一期的\"上一期\"就成了空值。"
+                "把窗口函数放进子查询，在没筛选的全部数据上算好、起别名，外层再按时间范围筛选。"
+            )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 每组前 N 没截断（H9S02）："每个类型最能挣钱的两部片子"，SQL 没用窗口函数，结果每个类型几十行。
+# 判定：问题里有一个"每个 / 各"的分组和一个"前 N / 最……的 N 个"，结果第一列（分组列）的某个值出现了不止 N 行。
+# 问题说并列的都算、或者有两层分组（"每个国家每年"）时不判。
+# ---------------------------------------------------------------------------
+
+_CN_NUMBER = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_PER_GROUP = re.compile(r"每(个|一个|种|类|家|位|名|部|张|年|月|天)?|各(个|自|家|位|类)?")
+_UNIT = r"(?:个|位|部|家|名|张|首|种|条|笔|款|件|本|支)"
+_TOP_N = [
+    re.compile(r"(?<![之以提目当])前\s*([0-9]+|[一两二三四五六七八九十])\s*" + _UNIT + r"?"),
+    re.compile(r"最[^，。？\s]{0,8}?的\s*([0-9]+|[一两二三四五六七八九十])\s*" + _UNIT),
+    re.compile(r"最[^，。？\s]{0,8}?的(?:是)?(?:哪|那)\s*(?:一)?" + _UNIT + r"()"),   # "最多的是哪家"：N = 1
+]
+
+
+def group_topn_overflow(query: str, columns, rows) -> Optional[str]:
+    """问每组前 N、结果的分组列却有某个值超过 N 行时，返回给修正提示用的说明；否则返回 None。"""
+    if not query or not rows or not columns or "并列" in query:
+        return None
+    if len(_PER_GROUP.findall(query)) != 1:
+        return None
+    match = next((m for m in (pattern.search(query) for pattern in _TOP_N) if m), None)
+    if not match:
+        return None
+    raw = match.group(1)
+    n = 1 if not raw else int(raw) if raw.isdigit() else _CN_NUMBER[raw]
+    first = columns[0]
+    counts = {}
+    for row in rows:
+        value = row[first] if isinstance(row, dict) else row[0]
+        counts[value] = counts.get(value, 0) + 1
+    worst = max(counts.values())
+    if worst <= n:
+        return None
+    return (
+        f"SQL 能执行，但每组前 {n} 没截断：问题要每组只取前 {n} 个，结果里同一个 {first} 出现了 {worst} 行"
+        f"（共 {len(rows)} 行）。按组内前 N 写：汇总和 ROW_NUMBER() OVER (PARTITION BY 分组列 ORDER BY 指标 DESC) "
+        f"写在同一层子查询里，外层只筛 rn <= {n}；外层不再 GROUP BY。"
+    )
