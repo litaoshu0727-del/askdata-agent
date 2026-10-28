@@ -1,0 +1,63 @@
+{
+  "H10E01": [
+    "WITH oc AS (\n    SELECT DISTINCT o.order_id, c1.category_name\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    JOIN dim_category c2 ON c2.category_id = p.category_id\n    JOIN dim_category c1 ON c1.category_id = c2.parent_category_id\n)\nSELECT oc.category_name,\n       ROUND(100.0 * SUM(CASE WHEN u.city = s.city THEN o.pay_amount ELSE 0 END) / SUM(o.pay_amount), 2)\nFROM fact_order o\nJOIN oc ON oc.order_id = o.order_id\nJOIN dim_user u ON u.user_id = o.user_id\nJOIN dim_shop s ON s.shop_id = o.shop_id\nWHERE o.pay_time IS NOT NULL\nGROUP BY oc.category_name"
+  ],
+  "H10E03": [
+    "WITH f AS (\n    SELECT user_id, channel, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY create_time) AS rn\n    FROM fact_order\n), us AS (\n    SELECT user_id, SUM(CASE WHEN pay_time IS NOT NULL THEN pay_amount ELSE 0 END) AS amt\n    FROM fact_order GROUP BY user_id\n)\nSELECT f.channel, ROUND(AVG(us.amt), 2)\nFROM f JOIN us ON us.user_id = f.user_id\nWHERE f.rn = 1\nGROUP BY f.channel"
+  ],
+  "H10E04": [
+    "WITH f AS (\n    SELECT o.user_id, MIN(p.pay_time) AS first_pay\n    FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id\n    GROUP BY o.user_id\n)\nSELECT u.member_level,\n       ROUND(AVG(julianday(date(f.first_pay)) - julianday(u.register_time)), 1)\nFROM dim_user u JOIN f ON f.user_id = u.user_id\nGROUP BY u.member_level"
+  ],
+  "H10E05": [
+    "SELECT p.brand, SUM(i.quantity)\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nJOIN dim_shop s ON s.shop_id = o.shop_id\nJOIN dim_category c2 ON c2.category_id = s.main_category_id\nJOIN dim_category c1 ON c1.category_id = c2.parent_category_id\nJOIN fact_order_item i ON i.order_id = o.order_id\nJOIN dim_product p ON p.product_id = i.product_id\nWHERE u.member_level = '金卡会员' AND c1.category_name = '数码电器' AND o.order_status = '已完成'\nGROUP BY p.brand"
+  ],
+  "H10E11": [
+    "SELECT o.order_status, COUNT(*)\nFROM dws_user_summary s\nJOIN fact_order o ON o.user_id = s.user_id AND o.create_time = s.last_order_time\nGROUP BY o.order_status"
+  ],
+  "H10E13": [
+    "WITH oc AS (\n    SELECT DISTINCT o.order_id, c1.category_name\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    JOIN dim_category c2 ON c2.category_id = p.category_id\n    JOIN dim_category c1 ON c1.category_id = c2.parent_category_id\n),\nt AS (\n    SELECT oc.category_name, p.pay_channel, SUM(o.pay_amount) AS amt\n    FROM fact_payment p\n    JOIN fact_order o ON o.order_id = p.order_id\n    JOIN oc ON oc.order_id = o.order_id\n    GROUP BY oc.category_name, p.pay_channel\n), r AS (\n    SELECT *, RANK() OVER (PARTITION BY category_name ORDER BY amt DESC) rk FROM t\n)\nSELECT category_name, pay_channel, ROUND(amt, 2) FROM r WHERE rk = 1"
+  ],
+  "H10E14": [
+    "WITH d AS (\n    SELECT date(pay_time) AS pay_date, SUM(pay_amount) AS amt\n    FROM fact_payment GROUP BY date(pay_time)\n), c AS (\n    SELECT pay_date, SUM(amt) OVER (ORDER BY pay_date) AS cum_amt FROM d\n)\nSELECT MIN(pay_date) FROM c WHERE cum_amt > 5000000"
+  ],
+  "H10E16": [
+    "WITH us AS (\n    SELECT u.user_id, u.age_group,\n           COALESCE(SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount END), 0) AS amt\n    FROM dim_user u LEFT JOIN fact_order o ON o.user_id = u.user_id\n    GROUP BY u.user_id, u.age_group\n)\nSELECT age_group, ROUND(AVG(amt), 2) FROM us GROUP BY age_group"
+  ],
+  "H10E17": [
+    "WITH oc AS (\n    SELECT DISTINCT o.order_id, c1.category_name\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    JOIN dim_category c2 ON c2.category_id = p.category_id\n    JOIN dim_category c1 ON c1.category_id = c2.parent_category_id\n),\nuc AS (\n    SELECT DISTINCT o.user_id, oc.category_name\n    FROM fact_order o JOIN oc ON oc.order_id = o.order_id\n    WHERE o.pay_time IS NOT NULL\n)\nSELECT COUNT(*) FROM (\n    SELECT user_id FROM uc WHERE category_name IN ('美妆护肤', '数码电器')\n    GROUP BY user_id HAVING COUNT(DISTINCT category_name) = 2\n) x"
+  ],
+  "H10E19": [
+    "WITH d AS (\n    SELECT date(o.create_time) AS dt, SUM(o.order_amount) AS gmv\n    FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id\n    WHERE s.shop_name = '好物专营店14'\n    GROUP BY date(o.create_time)\n), t AS (\n    SELECT dt, gmv, LAG(gmv) OVER (ORDER BY dt) AS prev_gmv FROM d\n)\nSELECT dt, ROUND(gmv, 2) FROM t WHERE prev_gmv IS NOT NULL AND gmv >= 2 * prev_gmv"
+  ],
+  "H10E20": [
+    "SELECT c1.category_name,\n       ROUND(100.0 * SUM(CASE WHEN b.behavior_type = '加购' THEN 1 ELSE 0 END)\n             / SUM(CASE WHEN b.behavior_type = '浏览' THEN 1 ELSE 0 END), 1)\nFROM fact_user_behavior b\nJOIN dim_product p ON p.product_id = b.product_id\nJOIN dim_shop s ON s.shop_id = p.shop_id\nJOIN dim_category c2 ON c2.category_id = s.main_category_id\nJOIN dim_category c1 ON c1.category_id = c2.parent_category_id\nGROUP BY c1.category_name"
+  ],
+  "H10E22": [
+    "SELECT s.shop_type, ROUND(AVG(t.g), 2)\nFROM dim_shop s\nJOIN (SELECT shop_id, SUM(order_amount) AS g FROM fact_order GROUP BY shop_id) t ON t.shop_id = s.shop_id\nGROUP BY s.shop_type"
+  ],
+  "H10E23": [
+    "SELECT s.shop_name,\n       ROUND(100.0 * (SUM(CASE WHEN date(o.create_time) >= '2024-05-16' THEN o.order_amount ELSE 0 END)\n                      - SUM(CASE WHEN date(o.create_time) <= '2024-05-15' THEN o.order_amount ELSE 0 END))\n             / SUM(CASE WHEN date(o.create_time) <= '2024-05-15' THEN o.order_amount ELSE 0 END), 2)\nFROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id\nGROUP BY s.shop_id, s.shop_name"
+  ],
+  "H10E24": [
+    "SELECT u.member_level,\n       ROUND(100.0 * SUM(CASE WHEN i.item_price >= 3000 THEN i.quantity ELSE 0 END) / SUM(i.quantity), 2)\nFROM fact_order o\nJOIN dim_user u ON u.user_id = o.user_id\nJOIN fact_order_item i ON i.order_id = o.order_id\nWHERE o.pay_time IS NOT NULL\nGROUP BY u.member_level"
+  ],
+  "H10E25": [
+    "WITH oc AS (\n    SELECT DISTINCT o.order_id, c1.category_name\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    JOIN dim_category c2 ON c2.category_id = p.category_id\n    JOIN dim_category c1 ON c1.category_id = c2.parent_category_id\n)\nSELECT COUNT(DISTINCT b.user_id)\nFROM fact_user_behavior b\nJOIN dim_product p ON p.product_id = b.product_id\nJOIN dim_shop s ON s.shop_id = p.shop_id\nJOIN dim_category c2 ON c2.category_id = s.main_category_id\nJOIN dim_category c1 ON c1.category_id = c2.parent_category_id\nWHERE b.behavior_type = '收藏' AND c1.category_name = '食品生鲜'\n  AND b.user_id NOT IN (\n      SELECT o.user_id FROM fact_order o JOIN oc ON oc.order_id = o.order_id\n      WHERE o.pay_time IS NOT NULL AND oc.category_name = '食品生鲜'\n  )"
+  ],
+  "H10E26": [
+    "SELECT u.user_name, COUNT(*), SUM(CASE WHEN o.order_status = '已退款' THEN 1 ELSE 0 END)\nFROM fact_order o JOIN dim_user u ON u.user_id = o.user_id\nGROUP BY o.user_id, u.user_name\nHAVING SUM(CASE WHEN o.order_status = '已退款' THEN 1 ELSE 0 END) * 2 >= COUNT(*)",
+    "SELECT u.user_name, COUNT(o.order_id), COUNT(r.refund_id)\nFROM fact_order o\nJOIN dim_user u ON u.user_id = o.user_id\nLEFT JOIN fact_refund r ON r.order_id = o.order_id\nGROUP BY o.user_id, u.user_name\nHAVING COUNT(r.refund_id) * 2 >= COUNT(o.order_id)"
+  ],
+  "H10C02": [
+    "WITH cs AS (\n    SELECT i.BillingCountry AS country, c.CustomerId, c.FirstName, c.LastName, SUM(i.Total) AS spend\n    FROM Invoice i JOIN Customer c ON c.CustomerId = i.CustomerId\n    GROUP BY i.BillingCountry, c.CustomerId, c.FirstName, c.LastName\n), big AS (\n    SELECT BillingCountry FROM Invoice GROUP BY BillingCountry HAVING COUNT(DISTINCT CustomerId) >= 4\n), r AS (\n    SELECT cs.*, RANK() OVER (PARTITION BY country ORDER BY spend DESC) rk\n    FROM cs WHERE country IN (SELECT BillingCountry FROM big)\n)\nSELECT country, FirstName, LastName, ROUND(spend, 2) FROM r WHERE rk = 1"
+  ],
+  "H10C03": [
+    "SELECT DISTINCT c.Country\nFROM Customer c\nJOIN Invoice i ON i.CustomerId = c.CustomerId\nJOIN InvoiceLine il ON il.InvoiceId = i.InvoiceId\nJOIN Track t ON t.TrackId = il.TrackId\nJOIN Genre g ON g.GenreId = t.GenreId\nWHERE g.Name = 'Blues'\n  AND c.Country NOT IN (\n      SELECT c2.Country\n      FROM Customer c2\n      JOIN Invoice i2 ON i2.CustomerId = c2.CustomerId\n      JOIN InvoiceLine il2 ON il2.InvoiceId = i2.InvoiceId\n      JOIN Track t2 ON t2.TrackId = il2.TrackId\n      JOIN Genre g2 ON g2.GenreId = t2.GenreId\n      WHERE g2.Name = 'Jazz'\n  )"
+  ],
+  "H10C11": [
+    "SELECT c.Country, COUNT(*), ROUND(SUM(il.UnitPrice * il.Quantity), 2)\nFROM Artist ar\nJOIN Album a ON a.ArtistId = ar.ArtistId\nJOIN Track t ON t.AlbumId = a.AlbumId\nJOIN InvoiceLine il ON il.TrackId = t.TrackId\nJOIN Invoice i ON i.InvoiceId = il.InvoiceId\nJOIN Customer c ON c.CustomerId = i.CustomerId\nWHERE ar.Name = 'Iron Maiden'\nGROUP BY c.Country"
+  ],
+  "H10S05": [
+    "WITH m AS (\n    SELECT i.store_id, strftime('%Y-%m', r.rental_date) AS ym, SUM(p.amount) AS amt\n    FROM payment p\n    JOIN rental r ON r.rental_id = p.rental_id\n    JOIN inventory i ON i.inventory_id = r.inventory_id\n    GROUP BY i.store_id, ym\n), l AS (\n    SELECT store_id, ym, amt, LAG(amt) OVER (PARTITION BY store_id ORDER BY ym) AS prev_amt FROM m\n)\nSELECT store_id, ym, ROUND(100.0 * (amt - prev_amt) / prev_amt, 2) FROM l\nWHERE ym BETWEEN '2005-06' AND '2005-08'"
+  ]
+}
