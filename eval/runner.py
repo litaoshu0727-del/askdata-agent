@@ -200,7 +200,8 @@ HOLDOUT9_BANKS = {
     "sakila": HOLDOUT9_SAKILA_CASES,
 }
 
-# 第十套：三个库，验证分组粒度、窗口的上一期、每组前 N 三项结果检查在陌生题上的效果。冻结后还没运行过。
+# 第十套：三个库，验证分组粒度、窗口的上一期、每组前 N 三项结果检查在陌生题上的效果。04041c2 冻结后第一次
+# 运行——现在也用过了。
 try:
     from eval.cases_holdout10 import (  # noqa: E402
         HOLDOUT10_CHINOOK_CASES,
@@ -1308,7 +1309,7 @@ def build_parser() -> argparse.ArgumentParser:
             "holdout7 是第七套，规范同第六套（ecommerce + Chinook）；"
             "holdout8 是第八套，题面可以靠口径约定（ecommerce + Chinook）；"
             "holdout9 是第九套，Sakila，验证泛化；"
-            "holdout10 是第十套，三个库，验证结果检查（冻结后未运行）；"
+            "holdout10 是第十套，三个库，验证结果检查；"
             "probes 是对着整数相除、一对多连接写的探针，用 --tag 选批次"
         ),
     )
@@ -1339,7 +1340,7 @@ def main() -> None:
             print(f"{args.dataset} 没有 {args.bank} 题库")
             return
 
-    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "holdout9"}:
+    if args.bank in {"holdout", "holdout2", "holdout3", "holdout4", "holdout5", "holdout6", "holdout7", "holdout8", "holdout9", "holdout10"}:
         # 提醒：这几套题都已经用过。再拿它们验证调优效果，它们就不再是留出集了。
         print(f"⚠️ {args.bank} 已经用过（见 docs/实验记录.md）。照着它的失败改过系统之后，"
               "再用它得出的分数不能当作泛化能力的证据。")
