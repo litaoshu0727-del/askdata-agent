@@ -6,6 +6,12 @@
       "runtimeExecutable": "/opt/anaconda3/envs/askdata-repro/bin/python",
       "runtimeArgs": ["-m", "askdata_web.server", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "askdata-web-mock",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": ["-u", "DEEPSEEK_API_KEY", "-u", "DASHSCOPE_API_KEY", "-u", "DASHSCOPE_WORKSPACE_ID", "-u", "ASKDATA_LOCAL_MODELS", "ASKDATA_DISABLE_DOTENV=1", "/opt/anaconda3/envs/askdata-repro/bin/python", "-m", "askdata_web.server", "--dataset", "trade", "--port", "8001"],
+      "port": 8001
     }
   ]
 }

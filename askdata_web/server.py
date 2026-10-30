@@ -11,6 +11,7 @@ AskData Web 服务。
 接口：
     GET  /               界面
     GET  /api/health     供应商、数据集、降级状态
+    GET  /api/schema     当前数据源的表与字段（只读）
     POST /api/ask        提问，返回整条链路的中间产物
     POST /api/reset      清空当前会话记忆
 """
@@ -21,6 +22,7 @@ import argparse
 import json
 import logging
 import re
+import socket
 import sys
 import threading
 import time
@@ -40,7 +42,10 @@ from askdata_memory import (  # noqa: E402
 )
 from askdata_pipeline.dynamic_service import DynamicAskDataService  # noqa: E402
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
-from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
+from askdata_pipeline.text2sql_pipeline import (  # noqa: E402
+    AskDataText2SQLPipeline,
+    _is_missing_schema_step,
+)
 from llm_config import describe_chat_provider, resolve_chat_provider, use_local_models  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -213,6 +218,8 @@ class AskDataService:
             "local_models": use_local_models(),
             "setup_diagnostics": [item.render() for item in self.pipeline.setup_diagnostics],
             "samples": SAMPLE_QUESTIONS[self.dataset],
+            # 按约定每套最后一道是库里没有的数据，界面给它标上“演示拒答”，免得被当成能查出结果的推荐
+            "refusal_sample": SAMPLE_QUESTIONS[self.dataset][-1],
         }
 
     def ask(self, query: str, user_id: str, session_id: str) -> Dict[str, Any]:
@@ -237,6 +244,7 @@ class AskDataService:
             "schema_tables": [],
             "relations": [],
             "cot": "",
+            "plan": [],
             "steps": [],
             "diagnostics": [],
         }
@@ -249,6 +257,21 @@ class AskDataService:
             payload["schema_tables"] = parse_schema_context(result.schema_context)
             payload["relations"] = parse_relations(result.schema_context)
             payload["cot"] = result.cot_output
+            # 规划拆成四元组给界面排版；missing 用和链路相同的判定，标出“库里缺数据”而拒答的步骤
+            payload["plan"] = [
+                {
+                    "step": step.step_no,
+                    "database": step.database,
+                    "objects": step.processing_objects,
+                    "instruction": step.operation_instruction,
+                    "output": step.output_target,
+                    "missing": _is_missing_schema_step(step),
+                }
+                for step in (
+                    self.pipeline.cot_planner.parse_steps(result.cot_output)
+                    if result.cot_output.strip() else []
+                )
+            ]
             payload["diagnostics"] = [
                 {"code": item.code, "text": item.render()}
                 for item in result.diagnostics
@@ -267,6 +290,31 @@ class AskDataService:
             ]
 
         return payload
+
+    def schema(self) -> Dict[str, Any]:
+        """提供元数据供页面浏览，不查询业务数据，也不调用模型。"""
+        retrieval = self.pipeline.schema_retrieval_service
+        tables = {
+            name: {"name": name, "summary": table.description,
+                   "aliases": list(table.aliases), "columns": []}
+            for name, table in retrieval.tables.items()
+        }
+        for column in retrieval.columns:
+            tables[column.table_name]["columns"].append({
+                "name": column.column_name, "type": column.data_type,
+                "desc": column.description, "role": column.semantic_role,
+                "primary_key": column.is_primary_key,
+                "foreign_key": column.foreign_key_ref,
+            })
+        return {
+            "dataset": self.dataset,
+            "tables": list(tables.values()),
+            "relations": [
+                f"{relation.source_table}.{relation.source_column} ↔ "
+                f"{relation.target_table}.{relation.target_column}"
+                for relation in retrieval.relations
+            ],
+        }
 
     @staticmethod
     def new_session() -> str:
@@ -354,6 +402,19 @@ def make_handler(service: AskDataService):
                 self._json(200, service.health())
                 return
 
+            if path == "/api/schema":
+                self._json(200, service.schema())
+                return
+
+            static_files = {
+                "/static/app.css": ("app.css", "text/css; charset=utf-8"),
+                "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            }
+            if path in static_files:
+                filename, content_type = static_files[path]
+                self._send(200, (STATIC_DIR / filename).read_bytes(), content_type)
+                return
+
             self._json(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
@@ -398,6 +459,7 @@ def make_handler(service: AskDataService):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AskData Web 服务")
     parser.add_argument("--port", type=int, default=8000)
+    # 默认只给本机用；--host 0.0.0.0 让同一网络里的手机也能打开，代价是谁连上都能用你的模型额度
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--dataset", default="ecommerce", choices=list(DATABASE_NAMES),
@@ -408,6 +470,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-db", default=str(Path("runtime_data") / "web_memory.db")
     )
     return parser
+
+
+def lan_address() -> str:
+    """本机的局域网 IP。UDP 的 connect 不发包，只是让系统挑出默认路由走的网卡。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+        except OSError:
+            return ""
 
 
 def main() -> None:
@@ -434,7 +506,16 @@ def main() -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(service))
     # flush：输出被重定向到文件或管道时是整块缓冲的，不刷就看不到服务已经起来了
-    print(f"\n启动完成：http://{args.host}:{args.port}\n", flush=True)
+    if args.host in ("0.0.0.0", ""):
+        # 0.0.0.0 只是“监听所有网卡”，浏览器打不开它，得给出实际能访问的地址
+        lan = lan_address()
+        print(f"\n启动完成：\n  电脑  http://127.0.0.1:{args.port}", flush=True)
+        if lan:
+            print(f"  手机  http://{lan}:{args.port}（手机要和电脑连同一个网络）\n", flush=True)
+        else:
+            print("  没有找到局域网地址，手机暂时连不上\n", flush=True)
+    else:
+        print(f"\n启动完成：http://{args.host}:{args.port}\n", flush=True)
 
     try:
         server.serve_forever()

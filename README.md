@@ -112,6 +112,46 @@ python -m askdata_web.server                    # http://127.0.0.1:8000
 配置项见 [.env.example](.env.example) 和 [llm_config.py](llm_config.py)。不配任何 Key
 时全部走 Mock，能跑通，但结果没有意义，降级记录里会写明。
 
+## Web 工作台
+
+```bash
+conda activate askdata-repro
+python -m askdata_web.server --dataset ecommerce --port 8000
+# 浏览器打开 http://127.0.0.1:8000
+
+# 手机也要打开：监听所有网卡，启动时会打印手机用的局域网地址
+python -m askdata_web.server --dataset ecommerce --host 0.0.0.0 --port 8000
+# 同一网络里谁都能连上并消耗你的模型额度；校园网、公司网常隔离设备，手机可能仍连不上
+```
+
+界面直接使用现有 Python 服务，不需要 Node.js、npm 或前端构建步骤：
+
+- 对话式布局：左侧按会话列出历史（最近 20 个，每个最多 30 轮，存在当前标签页的 sessionStorage），
+  新建会话（⌘K）会换一个后端 session_id；点开旧会话可以接着追问，追问和指代消解都在同一条对话流里。
+- 每一轮先把链路摊开成可展开的步骤行——改写问题、检索 Schema、规划查询、执行 SQL、降级记录，
+  展开能看到关键词、按四元组排好的规划（接口的 `plan` 字段）、带高亮的 SQL 和返回行数。
+  下面是回答和结果：表格 / 柱状图切换、选择数值指标、CSV 导出、复制 SQL。
+  接口每步骤最多返回 200 行，导出范围与页面相同，超出会标注；柱状图显示前 15 条非空记录。
+- 规划判定库里缺数据而拒答时，回答直接列出缺的是什么（取自规划的处理对象，表名字段名标成代码），
+  并给出跳到数据源页查看相关表字段的按钮；欢迎页上那道用来演示拒答的示例题会标注出来。
+  其他原因没生成 SQL 时，规划那一行默认展开，直接看到原文。
+- 右侧运行详情（概览 / SQL / Schema）对应某一轮：路由、耗时、检索关键词、降级记录、命中的表和关联。
+  等待时只显示实际耗时，不模拟逐步进度——接口一次返回整条链路。
+- 数据源页从 `GET /api/schema` 获取表、字段、类型与业务说明，支持按业务词搜索元数据，
+  不读取业务行、不调用模型。数据集由启动时的 `--dataset` 参数选择。
+- 浅色 / 深色跟随系统，右上角可以手动切换；窄屏时侧栏和运行详情收成抽屉。
+
+只验收页面交互时可启动原始交易库的离线 Demo（不读取本机密钥，也不加载本地模型）：
+
+```bash
+env -u DEEPSEEK_API_KEY -u DASHSCOPE_API_KEY -u DASHSCOPE_WORKSPACE_ID \
+  -u ASKDATA_LOCAL_MODELS ASKDATA_DISABLE_DOTENV=1 \
+  python -m askdata_web.server --dataset trade --port 8001
+```
+
+打开第一个示例问题“查询总交易笔数大于50000的利率是多少”。Mock 状态会在页面中明确标注；
+其他业务问题需要配置真实模型。前端文件在 `askdata_web/static/`。
+
 ## 数据集
 
 - **ecommerce**：自建，11 表 81 字段，约 7000 行，固定随机种子。刻意埋了近义字段：9 个

@@ -21,6 +21,7 @@ import threading  # noqa: E402
 import unittest  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 from pathlib import Path  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 from unittest import mock  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,6 +126,30 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(payload["provider"], "mock")
         self.assertFalse(payload["local_models"])
         self.assertEqual(payload["samples"], SAMPLE_QUESTIONS["trade"])
+        self.assertEqual(payload["refusal_sample"], SAMPLE_QUESTIONS["trade"][-1])
+
+    def test_schema_is_available_without_a_query(self):
+        status, payload = self.server.json("GET", "/api/schema")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["dataset"], "trade")
+        tables = {table["name"]: table for table in payload["tables"]}
+        self.assertEqual(set(tables), {"trade_summary", "interest_info"})
+        columns = {column["name"]: column for column in tables["trade_summary"]["columns"]}
+        self.assertTrue(columns["user_id"]["primary_key"])
+        self.assertTrue(columns["total_trade_count"]["type"])
+        self.assertTrue(payload["relations"])
+
+    def test_frontend_assets_are_served_and_paths_are_allowlisted(self):
+        for path, mime_type in (("/static/app.css", "text/css"), ("/static/app.js", "text/javascript")):
+            with self.subTest(path=path):
+                response, body = self.server.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertIn(mime_type, response.getheader("Content-Type"))
+                self.assertTrue(body)
+        for path in ("/static/../server.py", "/static/.env", "/static/nope.js"):
+            with self.subTest(path=path):
+                response, _ = self.server.request("GET", path)
+                self.assertEqual(response.status, 404)
 
     def test_query_string_does_not_change_the_route(self):
         status, payload = self.server.json("GET", "/api/health?t=1")
@@ -151,6 +176,30 @@ class WebApiTest(unittest.TestCase):
         self.assertIn("interest_rate", step["sql"])
         self.assertEqual(step["columns"], ["interest_rate"])
         self.assertEqual((len(step["rows"]), step["row_count"], step["truncated"]), (5, 5, False))
+
+        self.assertTrue(payload["plan"])
+        self.assertEqual(set(payload["plan"][0]), {"step", "database", "objects", "instruction", "output", "missing"})
+        self.assertFalse(any(item["missing"] for item in payload["plan"]))
+
+    def test_refusal_plan_is_marked_missing(self):
+        """规划判定库里缺数据时，界面靠 plan[].missing 认出拒答，并把处理对象当原因展示。"""
+        cot = (
+            "步骤1：\n(\n  数据库：缺失,\n"
+            "  处理对象：缺少用户信用评分字段；trade_summary 只有交易汇总,\n"
+            "  操作指令：确认 Schema 中没有信用评分,\n  输出目标：缺失\n)"
+        )
+        result = SimpleNamespace(keywords=[], rewritten_query="", schema_context="", cot_output=cot, diagnostics=[], step_logs=[])
+        routed = SimpleNamespace(
+            decision=SimpleNamespace(route=SimpleNamespace(value="text2sql"), reason=""),
+            queried_database=True, answer="", pipeline_result=result,
+        )
+        with mock.patch.object(self.server.service.service, "run", return_value=routed):
+            status, payload = self.server.json("POST", "/api/ask", {"query": "每个用户的信用评分是多少"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["steps"], [])
+        [step] = payload["plan"]
+        self.assertTrue(step["missing"])
+        self.assertTrue(step["objects"].startswith("缺少用户信用评分字段；trade_summary"))
 
     def test_truncation_reaches_the_page(self):
         executor = self.server.service.pipeline.mcp_router.executors["trade_db"]
