@@ -35,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from eval.runner import BANKS, DATASETS, case_ndigits, normalize_rows  # noqa: E402
+from eval.runner import BANKS, DATASETS, case_ndigits, rows_match  # noqa: E402
 
 TRAP_SQL = "SELECT 1 WHERE 0"
 HARD_TAGS = {"考点:多表连接", "考点:两层聚合", "考点:窗口排名", "考点:相对时间", "考点:否定集合"}
@@ -149,7 +149,7 @@ def main() -> None:
         except sqlite3.Error as exc:
             fail(c.id, "参考 SQL 跑不通", type(exc).__name__)
             continue
-        results[c.id] = normalize_rows(rows, c.ordered, case_ndigits(c))
+        results[c.id] = rows
         if degenerate(rows):
             fail(c.id, "结果退化（0 行或单个 0/NULL）")
         for item in c.must_hit_columns:
@@ -169,7 +169,7 @@ def main() -> None:
             except sqlite3.Error as exc:
                 fail(c.id, "候选路径 SQL 跑不通", type(exc).__name__)
                 continue
-            if normalize_rows(alt_rows, c.ordered, case_ndigits(c)) != results[c.id]:
+            if not rows_match(alt_rows, results[c.id], c.ordered, case_ndigits(c)):
                 fail(c.id, "候选路径结果和参考答案不一致")
         used = {t for t in tables if re.search(rf"\b{re.escape(t)}\b", c.reference_sql)}
         touched |= used
@@ -204,14 +204,14 @@ def main() -> None:
             same = False
             if not other.expect_unanswerable:
                 try:
-                    same = normalize_rows(run(conn, other.reference_sql), c.ordered, case_ndigits(c)) == results.get(c.id)
+                    same = c.id in results and rows_match(run(conn, other.reference_sql), results[c.id], c.ordered, case_ndigits(c))
                 except sqlite3.Error:
                     pass
             if ratio >= SIMILAR or same:
                 dups.append((c.id, label, ratio, same))
     for a, b in itertools.combinations(cases, 2):
         ratio = difflib.SequenceMatcher(None, a.query, b.query).ratio()
-        same = a.id in results and b.id in results and results[a.id] == results[b.id]
+        same = a.id in results and b.id in results and rows_match(results[a.id], results[b.id], a.ordered, case_ndigits(a))
         if ratio >= SIMILAR or same:
             dups.append((b.id, f"本套:{a.id}", ratio, same))
     conn.close()

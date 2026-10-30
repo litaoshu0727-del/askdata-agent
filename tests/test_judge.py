@@ -20,10 +20,10 @@ from eval.cases import EvalCase  # noqa: E402
 from eval.runner import (  # noqa: E402
     case_ndigits,
     extra_columns_match,
-    normalize_rows,
     normalize_value,
     parse_hit_columns,
     round_like_sqlite,
+    rows_match,
     run_case,
     score_requirements,
 )
@@ -112,27 +112,44 @@ class NormalizeValueTest(unittest.TestCase):
         self.assertEqual(normalize_value("  北京 "), "北京")
 
 
-class NormalizeRowsTest(unittest.TestCase):
+class RowsMatchTest(unittest.TestCase):
     def test_column_names_and_order_do_not_matter(self):
         actual = [{"total_gmv": 10.0, "city": "北京"}]
         expected = [{"city": "北京", "SUM(gmv)": 10}]
-        self.assertEqual(normalize_rows(actual, False), normalize_rows(expected, False))
+        self.assertTrue(rows_match(actual, expected, False))
+
+    def test_values_cannot_swap_columns_row_by_row(self):
+        """员工和上级的名字逐行对调：原先每行各自排序再比，这样也判对。"""
+        expected = [{"emp": "张三", "boss": "李四"}, {"emp": "王五", "boss": "赵六"}]
+        swapped = [{"emp": "张三", "boss": "李四"}, {"emp": "赵六", "boss": "王五"}]
+        self.assertFalse(rows_match(swapped, expected, False))
+        # 整列对调是列顺序不同，照样算对
+        reordered = [{"b": "李四", "e": "张三"}, {"b": "赵六", "e": "王五"}]
+        self.assertTrue(rows_match(reordered, expected, False))
+
+    def test_columns_with_equal_value_sets_are_checked_as_a_whole_table(self):
+        """两列各自的值集合都对得上，拼成行却不对：要整表核对，不能只看单列。"""
+        expected = [{"a": 1, "b": 2}, {"a": 2, "b": 1}]
+        self.assertTrue(rows_match([{"x": 2, "y": 1}, {"x": 1, "y": 2}], expected, False))
+        self.assertFalse(rows_match([{"x": 1, "y": 1}, {"x": 2, "y": 2}], expected, False))
 
     def test_row_order_matters_only_when_ordered(self):
         a = [{"v": 1}, {"v": 2}]
         b = [{"v": 2}, {"v": 1}]
-        self.assertEqual(normalize_rows(a, False), normalize_rows(b, False))
-        self.assertNotEqual(normalize_rows(a, True), normalize_rows(b, True))
+        self.assertTrue(rows_match(a, b, False))
+        self.assertFalse(rows_match(a, b, True))
 
-    def test_wrong_values_and_row_counts_are_caught(self):
+    def test_wrong_values_row_counts_and_widths_are_caught(self):
         expected = [{"v": 1}, {"v": 2}]
-        self.assertNotEqual(normalize_rows([{"v": 1}], False), normalize_rows(expected, False))
-        self.assertNotEqual(normalize_rows([{"v": 1}, {"v": 3}], False), normalize_rows(expected, False))
+        self.assertFalse(rows_match([{"v": 1}], expected, False))
+        self.assertFalse(rows_match([{"v": 1}, {"v": 3}], expected, False))
+        self.assertFalse(rows_match([{"v": 1, "w": 0}, {"v": 2, "w": 0}], expected, False))
+        self.assertTrue(rows_match([], [], False))
 
     def test_precision_is_passed_through(self):
         a, b = [{"rate": 0.1234}], [{"rate": 0.1199}]
-        self.assertEqual(normalize_rows(a, False), normalize_rows(b, False))
-        self.assertNotEqual(normalize_rows(a, False, 4), normalize_rows(b, False, 4))
+        self.assertTrue(rows_match(a, b, False))
+        self.assertFalse(rows_match(a, b, False, 4))
 
 
 class _FixedAnswerPipeline:

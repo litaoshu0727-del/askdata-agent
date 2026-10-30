@@ -18,21 +18,21 @@ sys.path.insert(0, str(ROOT))
 
 from askdata_pipeline.ecommerce_data import create_ecommerce_demo_database  # noqa: E402
 from eval.cases_probes import PROBE_BANKS, WRONG_SQL  # noqa: E402
-from eval.runner import BANKS, DATASETS, case_ndigits, load_expected, normalize_rows  # noqa: E402
+from eval.runner import BANKS, DATASETS, case_ndigits, load_expected, rows_match  # noqa: E402
 
 BATCH_TAGS = {"探针:整数除法", "探针:整数除法二", "探针:一对多", "探针:一对多二", "探针:每组前N", "探针:每组前N二", "探针:时间差", "探针:时间差二", "探针:唯一与挂单", "探针:唯一与挂单二", "探针:口径", "探针:口径二", "探针:全称"}
 NO_WRONG_SQL = {"对照", "窗口筛选"}
 CHINOOK_DB = ROOT / "runtime_data" / "chinook.db"
 
 
-def answer(db_path: Path, case, sql: str) -> list:
+def rows_of(db_path: Path, sql: str) -> list:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         rows = [dict(row) for row in conn.execute(sql)]
     finally:
         conn.close()
-    return normalize_rows(rows, case.ordered, case_ndigits(case))
+    return rows
 
 
 class ProbeBankShapeTest(unittest.TestCase):
@@ -90,10 +90,10 @@ class ProbeDiscriminationTest(unittest.TestCase):
                 self.assertTrue(expected, "参考 SQL 没有返回任何行")
 
                 if case.id in WRONG_SQL:
-                    self.assertNotEqual(
-                        answer(db_path, case, WRONG_SQL[case.id]),
-                        answer(db_path, case, case.reference_sql),
-                    )
+                    # 错误写法要被判分判成错，用的就是判分的比法
+                    self.assertFalse(rows_match(
+                        rows_of(db_path, WRONG_SQL[case.id]), expected, case.ordered, case_ndigits(case),
+                    ))
 
     def test_ecommerce_probes(self):
         self.check(self.ecommerce_db, PROBE_BANKS["ecommerce"])

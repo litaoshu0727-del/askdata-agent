@@ -487,19 +487,78 @@ def normalize_value(value: Any, ndigits: int = FLOAT_NDIGITS) -> str:
     return f"{round_like_sqlite(number, ndigits):f}"
 
 
-def normalize_rows(
-    rows: Sequence[Dict[str, Any]],
+MAX_COLUMN_MAPPINGS = 5000
+
+
+def rows_match(
+    actual: Sequence[Dict[str, Any]],
+    expected: Sequence[Dict[str, Any]],
     ordered: bool,
     ndigits: int = FLOAT_NDIGITS,
-) -> List[Tuple[str, ...]]:
+) -> bool:
     """
-    把结果集归一化成可比较的形式。
+    两个结果集是否相同。
 
     只比**值**，不比列名——同一个问题，列别名可以叫 gmv、total_gmv、
-    SUM(d.gmv)，都是对的。行内值排序则是为了容忍列顺序不同。
+    SUM(d.gmv)，都是对的。列顺序也不限，但列的对应关系对所有行必须是同一套。
+
+    原先每行的值各自排序再比，列顺序是容忍了，可每行也能各配各的：员工和上级的
+    名字对调、起点和终点对调，照样判对。现在先给每个期望列配一个实际列，
+    同一套配法套到所有行上再比。
     """
-    normalized = [tuple(sorted(normalize_value(v, ndigits) for v in row.values())) for row in rows]
-    return normalized if ordered else sorted(normalized)
+    if len(actual) != len(expected):
+        return False
+    if not expected:
+        return True
+
+    expected_columns, actual_columns = list(expected[0]), list(actual[0])
+    if len(expected_columns) != len(actual_columns):
+        return False
+
+    def column(rows, name):
+        return [normalize_value(row.get(name), ndigits) for row in rows]
+
+    expected_values = {name: column(expected, name) for name in expected_columns}
+    actual_values = {name: column(actual, name) for name in actual_columns}
+
+    # 先按单列筛候选：有序时整列逐行相同，无序时整列的值的多重集相同。这是必要条件，
+    # 多数题每个期望列只剩一个候选；剩下的配法再整表核对
+    signature = (lambda values: values) if ordered else sorted
+    actual_signatures = {name: signature(values) for name, values in actual_values.items()}
+    candidates = [
+        [name for name in actual_columns if actual_signatures[name] == signature(expected_values[target])]
+        for target in expected_columns
+    ]
+    if not all(candidates):
+        return False
+
+    def as_rows(values_by_position):
+        rows = list(zip(*values_by_position))
+        return rows if ordered else sorted(rows)
+
+    target = as_rows([expected_values[name] for name in expected_columns])
+    search_order = sorted(range(len(expected_columns)), key=lambda i: len(candidates[i]))
+    chosen: List[str] = [""] * len(expected_columns)
+    used: Set[str] = set()
+    tried = 0
+
+    def search(depth: int) -> bool:
+        nonlocal tried
+        if depth == len(search_order):
+            tried += 1
+            return as_rows([actual_values[name] for name in chosen]) == target
+        position = search_order[depth]
+        for name in candidates[position]:
+            if name in used or tried >= MAX_COLUMN_MAPPINGS:
+                continue
+            used.add(name)
+            chosen[position] = name
+            if search(depth + 1):
+                return True
+            used.discard(name)
+        return False
+
+    return search(0)
 
 
 MAX_EXTRA_COLUMN_COMBINATIONS = 5000
@@ -530,10 +589,9 @@ def extra_columns_match(
     if math.comb(len(columns), width) > MAX_EXTRA_COLUMN_COMBINATIONS:
         return -1
 
-    target = normalize_rows(expected, ordered, ndigits)
     for chosen in itertools.combinations(columns, width):
         projected = [{name: row.get(name) for name in chosen} for row in actual]
-        if normalize_rows(projected, ordered, ndigits) == target:
+        if rows_match(projected, expected, ordered, ndigits):
             return extra
 
     return -1
@@ -698,7 +756,7 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
 
     ndigits = case_ndigits(case)
 
-    if normalize_rows(actual, case.ordered, ndigits) == normalize_rows(expected, case.ordered, ndigits):
+    if rows_match(actual, expected, case.ordered, ndigits):
         return CaseOutcome(status="pass", generated_sql=generated_sql, **base)
 
     extra = extra_columns_match(actual, expected, case.ordered, ndigits)

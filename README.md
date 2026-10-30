@@ -184,12 +184,14 @@ python -m eval.runner --dataset ecommerce_big                   # 1076 个字段
 python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
+python -m eval.rejudge_runs                                     # 判分改了以后重判存下的运行记录（不调模型）
 python -m eval.runner --bank probes --tag 探针:一对多 --repeat 3  # 探针：整数相除、一对多连接
 python -m eval.probe_regression                                 # 全部探针一键回归，和上一次比
 python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录
 ```
 
-- **比执行结果，不比 SQL 字符串**：行内值排序、行间集合比对，容忍列别名和列顺序。
+- **比执行结果，不比 SQL 字符串**：列名不比、列顺序不限，但列的对应关系对所有行必须是同一套
+  （员工和上级的名字逐行对调会判错，[详情](docs/实验记录.md#判分改严列的对应关系对所有行一致)）；行间按集合比对。
   数值比到题面要求的小数位（"保留 N 位小数"，没写就是 2 位），取整规则和 SQLite 的
   `ROUND` 一致
 - **多返回的列不算错**（第七套之后）：行数相同，能挑出同一组列和参考答案逐行对上，就算对；报告里
@@ -259,7 +261,6 @@ python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # �
 - **一对多连接的重复计数只降了约三分之二。**订单连上明细表之后再数订单、加订单金额，SQL 生成加了
   规则后，探针上这类错 14/87 → 5/87，H4E27 本身测不出差别。剩下的形态在 SQL 结构上认得出来，但要
   解析 SQL，没有加（[详情](docs/实验记录.md#一对多连接订单被数了几遍)）
-- **判分的局限**：每行的值先排序再比，把员工和上级的名字对调也会判对
 
 ## 测试
 
