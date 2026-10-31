@@ -113,6 +113,34 @@ class MemoryTestCase(unittest.TestCase):
         finally:
             service.close()
 
+    def test_payload_does_not_count_toward_the_window(self) -> None:
+        """窗口只拼 content。查库回答带着整条链路的 payload，不能因为它被挤出窗口，否则紧接着的追问看不到上一轮。"""
+        store = SQLiteMemoryStore(self.db_path)
+        service = ShortTermMemoryService(
+            store=store,
+            config=ShortTermMemoryConfig(max_window_messages=10, max_window_tokens=200, async_summary=False),
+        )
+        try:
+            service.add_message(user_id="u1", session_id="s1", role=MessageRole.USER, content="销售额最高的三家店")
+            service.add_message(
+                user_id="u1", session_id="s1", role=MessageRole.ASSISTANT,
+                content="已完成数据库查询。查询结果：店1、店2、店3", message_type="sql_result",
+                payload={"schema_context": "字段说明" * 5000},
+            )
+            # 旧版本写进库的消息，token_count 把 payload 也算了进去；窗口要按 content 现算
+            store.add_message(
+                user_id="u1", session_id="s1", role=MessageRole.ASSISTANT, content="上一轮的旧回答",
+                message_type="sql_result", payload={}, metadata={}, token_count=99999,
+            )
+            service.add_message(user_id="u1", session_id="s1", role=MessageRole.USER, content="它们的退款呢")
+            context = service.get_context(user_id="u1", session_id="s1")
+            self.assertEqual(
+                [m.content for m in context.messages],
+                ["销售额最高的三家店", "已完成数据库查询。查询结果：店1、店2、店3", "上一轮的旧回答", "它们的退款呢"],
+            )
+        finally:
+            service.close()
+
     def test_long_term_recall_is_user_isolated_and_filterable(self) -> None:
         store = SQLiteMemoryStore(self.db_path)
         service = LongTermMemoryService(

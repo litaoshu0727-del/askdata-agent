@@ -66,7 +66,7 @@ class ShortTermMemoryService:
             message_type=message_type,
             payload=payload,
             metadata=metadata,
-            token_count=self.estimate_tokens(content, payload),
+            token_count=self.estimate_tokens(content),
         )
         self._schedule_if_needed(user_id=user_id, session_id=session_id)
         return message
@@ -115,11 +115,18 @@ class ShortTermMemoryService:
         self._executor.shutdown(wait=wait)
 
     @staticmethod
-    def estimate_tokens(content: str, payload: Optional[Dict[str, Any]] = None) -> int:
+    def estimate_tokens(content: str) -> int:
+        """
+        估算一条消息拼进提示词时占多少 token。
+
+        只算 content：窗口拼进提示词的只有 content（ShortTermContext.to_prompt_context），payload 是整条链路的
+        产物（两份 Schema 上下文、CoT、SQL 轨迹、执行结果），只留给摘要器用。原先把 payload 也算进去，一条查库
+        回答估出 4000–6000 token，比 4000 的窗口还大，刚写进去就被挤出窗口：紧接着的追问看不到上一轮的答案，
+        只能等后台摘要做完。第一套多轮留出集上，第 2 轮追问 44 次只有 7 次做了指代消解，就是这个原因。
+        """
         chinese = len(re.findall(r"[\u4e00-\u9fff]", content))
         remaining = len(re.sub(r"[\u4e00-\u9fff\s]", "", content))
-        payload_chars = len(str(payload)) if payload else 0
-        return max(1, chinese + math.ceil((remaining + payload_chars) / 4))
+        return max(1, chinese + math.ceil(remaining / 4))
 
     def _select_window(self, messages: List[MemoryMessage]) -> List[MemoryMessage]:
         selected: List[MemoryMessage] = []
@@ -127,10 +134,12 @@ class ShortTermMemoryService:
         for message in reversed(messages):
             if len(selected) >= self.config.max_window_messages:
                 break
-            if selected and token_total + message.token_count > self.config.max_window_tokens:
+            # 按 content 现算，不用库里存的 token_count：旧版本写进去的消息把 payload 也算进了 token_count
+            tokens = self.estimate_tokens(message.content)
+            if selected and token_total + tokens > self.config.max_window_tokens:
                 break
             selected.append(message)
-            token_total += message.token_count
+            token_total += tokens
         return list(reversed(selected))
 
     def _get_unsummarized_overflow(
