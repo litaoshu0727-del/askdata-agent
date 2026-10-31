@@ -5,6 +5,11 @@ SQL 报错只打印异常类型：跑校验的人在冻结前不该看到题。
     python eval/blind_materials/check_holdout.py <出题目录> --module cases_holdout9 --var HOLDOUT9_SAKILA_CASES \\
         --dataset sakila --prefix H9S --count 40 --traps 4 --min-hard 14 --max-easy 4 --min-tables 13
 
+多轮追问（列表里是 MultiTurnCase）：--count 是组数，--traps 是陷阱轮数，难度分布不查（--min-hard 0 --max-easy 99）：
+
+    python eval/blind_materials/check_holdout.py <出题目录> --module cases_multiturn1 --var MULTITURN1_ECOMMERCE_CASES \\
+        --dataset ecommerce --prefix M1E --count 12 --traps 2 --min-hard 0 --max-easy 99 --min-tables 8 --min-form 3
+
 原先这份脚本只放在会话的临时目录里（第四到八套各一份，逐套改），被系统清理掉了；第九套起收进仓库。
 
 检查项：
@@ -17,7 +22,9 @@ SQL 报错只打印异常类型：跑校验的人在冻结前不该看到题。
   组内取前 N（ROW_NUMBER）的，换成 RANK 结果行数变了就是有并列
 - 参考 SQL 输出列用了 ROUND，题面要写明保留几位小数
 - 题面不出现表名、字段名；难度分布；带指定考点的非陷阱题过半；标了多表连接的至少用到 4 张表；表覆盖
-- 去重：和全部已有题库（含探针）以及这一套自己的其他题比，问法相似度 >= 0.6 或参考答案结果集相同
+- 去重：和全部已有题库（含探针）以及这一套自己的其他题比，问法相似度 >= 0.6 或参考答案结果集相同；多轮追问只比第 1 轮
+- 多轮追问的结构：每组 3–4 轮、轮的题号是 组号-轮次、第 1 轮不是陷阱也不标追问形式、每轮追问标了规范里的形式、
+  每组至少两种形式、陷阱轮的下一轮标了跨轮、指代的上一轮不超过 10 行、每种形式的次数、至少 2 组跨轮
 """
 
 from __future__ import annotations
@@ -90,6 +97,49 @@ def topn_problem(conn, sql: str) -> str:
     return "TopN 第 N 名和第 N+1 名并列" if rows[n - 1][column] == rows[n][column] else ""
 
 
+FOLLOW_UP_FORMS = ("追问:指代", "追问:省略", "追问:加条件", "追问:换角度", "追问:跨轮", "追问:依赖结果")
+MAX_REFERRED_ROWS = 10
+
+
+def check_chains(chains: list, results: dict, dataset: str, min_form: int) -> None:
+    """多轮追问的结构：轮数、轮的题号、第 1 轮自包含、追问标了形式、陷阱轮之后指回更早的轮、形式的分布。"""
+    form_counts: dict = {}
+    cross_chains = 0
+    for chain in chains:
+        turns = chain.turns
+        if not 3 <= len(turns) <= 4:
+            fail(chain.id, f"轮数 {len(turns)}，应为 3 或 4")
+        for index, turn in enumerate(turns, start=1):
+            if turn.id != f"{chain.id}-{index}":
+                fail(turn.id, "轮的题号应为 组号-轮次")
+        if turns and turns[0].expect_unanswerable:
+            fail(turns[0].id, "第 1 轮不能是陷阱轮")
+        if turns and any(tag.startswith("追问:") for tag in turns[0].tags):
+            fail(turns[0].id, "第 1 轮不该标追问形式")
+        used: set = set()
+        for previous, turn in zip(turns, turns[1:]):
+            forms = [tag for tag in turn.tags if tag.startswith("追问:")]
+            if not forms:
+                fail(turn.id, "追问没有标形式")
+            if set(forms) - set(FOLLOW_UP_FORMS):
+                fail(turn.id, "追问形式不在规范列出的六种里")
+            used.update(forms)
+            if previous.expect_unanswerable and "追问:跨轮" not in forms:
+                fail(turn.id, "陷阱轮的下一轮要指回更早的轮（追问:跨轮）")
+            if "追问:指代" in forms and len(results.get(previous.id) or []) > MAX_REFERRED_ROWS:
+                fail(turn.id, f"指代的上一轮结果超过 {MAX_REFERRED_ROWS} 行")
+        if len(turns) > 1 and len(used) < 2:
+            fail(chain.id, "这一组的追问只用了一种形式")
+        for form in used:
+            form_counts[form] = form_counts.get(form, 0) + sum(form in t.tags for t in turns)
+        cross_chains += "追问:跨轮" in used
+    for form in FOLLOW_UP_FORMS:
+        if form_counts.get(form, 0) < min_form:
+            fail(dataset, f"{form} 出现 {form_counts.get(form, 0)} 次，至少 {min_form} 次")
+    if cross_chains < 2:
+        fail(dataset, f"带 追问:跨轮 的组 {cross_chains} 个，至少 2 个")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("writer_dir")
@@ -103,11 +153,17 @@ def main() -> None:
     parser.add_argument("--max-easy", type=int, required=True)
     parser.add_argument("--min-tables", type=int, required=True)
     parser.add_argument("--self-bank", default="", help="评测器里这一套的题库名，去重时跳过它自己")
+    parser.add_argument("--min-form", type=int, default=2, help="多轮追问：每种追问形式至少出现几次")
     args = parser.parse_args()
 
     writer_dir = Path(args.writer_dir)
     sys.path.insert(0, str(writer_dir))
     cases = getattr(importlib.import_module(args.module), args.var)
+    # 多轮追问：一组是一个 MultiTurnCase。逐题的检查摊平成一轮一轮做，组的结构另外查
+    chains = cases if cases and hasattr(cases[0], "turns") else []
+    if chains:
+        cases = [turn for chain in chains for turn in chain.turns]
+    units = chains or cases
     alt_path = writer_dir / "alt_sql.json"
     alt = json.loads(alt_path.read_text(encoding="utf-8")) if alt_path.exists() else {}
     db_path = ROOT / DATASETS[args.dataset][2]
@@ -117,17 +173,17 @@ def main() -> None:
     columns_by_table = {t: [row[1] for row in conn.execute(f'PRAGMA table_info("{t}")')] for t in tables}
 
     # ---- 题号
-    ids = [c.id for c in cases]
-    if len(cases) != args.count:
-        fail(args.dataset, f"题数 {len(cases)}，应为 {args.count}")
+    ids = [c.id for c in units] + ([c.id for c in cases] if chains else [])
+    if len(units) != args.count:
+        fail(args.dataset, f"{'组' if chains else '题'}数 {len(units)}，应为 {args.count}")
     if len(set(ids)) != len(ids):
         fail(args.dataset, "题号重复")
-    for c in cases:
+    for c in units:
         if not re.fullmatch(rf"{args.prefix}\d\d", c.id):
             fail(c.id, "题号格式不对")
     existing = {case.id for bank, banks in BANKS.items() if bank != args.self_bank for pool in banks.values() for case in pool} | \
                {case.id for pool, _, _ in DATASETS.values() for case in pool}
-    for c in cases:
+    for c in units:
         if c.id in existing:
             fail(c.id, "题号和已有题库撞了")
 
@@ -183,13 +239,18 @@ def main() -> None:
         if leaked:
             fail(c.id, f"题面出现了表名或字段名 {len(leaked)} 个")
     real = [c for c in cases if not c.expect_unanswerable]
-    hard = sum("难度:难" in c.tags for c in real)
-    easy = sum("难度:简单" in c.tags for c in real)
-    if hard < args.min_hard or easy > args.max_easy:
-        fail(args.dataset, f"难度分布不达标：难 {hard}（至少 {args.min_hard}）、简单 {easy}（至多 {args.max_easy}）")
-    tagged = sum(bool(HARD_TAGS & set(c.tags)) for c in real)
-    if tagged * 2 < len(real):
-        fail(args.dataset, f"带指定考点的非陷阱题 {tagged}/{len(real)}，不到一半")
+    if chains:
+        check_chains(chains, results, args.dataset, args.min_form)
+        # 去重只看第 1 轮：追问离不开上下文，单拿出来和别的题比没有意义
+        real = [chain.turns[0] for chain in chains if chain.turns and not chain.turns[0].expect_unanswerable]
+    else:
+        hard = sum("难度:难" in c.tags for c in real)
+        easy = sum("难度:简单" in c.tags for c in real)
+        if hard < args.min_hard or easy > args.max_easy:
+            fail(args.dataset, f"难度分布不达标：难 {hard}（至少 {args.min_hard}）、简单 {easy}（至多 {args.max_easy}）")
+        tagged = sum(bool(HARD_TAGS & set(c.tags)) for c in real)
+        if tagged * 2 < len(real):
+            fail(args.dataset, f"带指定考点的非陷阱题 {tagged}/{len(real)}，不到一半")
     if len(touched) < args.min_tables:
         fail(args.dataset, f"参考 SQL 只覆盖了 {len(touched)} 张表，至少 {args.min_tables} 张")
 
@@ -209,7 +270,7 @@ def main() -> None:
                     pass
             if ratio >= SIMILAR or same:
                 dups.append((c.id, label, ratio, same))
-    for a, b in itertools.combinations(cases, 2):
+    for a, b in itertools.combinations(real if chains else cases, 2):
         ratio = difflib.SequenceMatcher(None, a.query, b.query).ratio()
         same = a.id in results and b.id in results and rows_match(results[a.id], results[b.id], a.ordered, case_ndigits(a))
         if ratio >= SIMILAR or same:

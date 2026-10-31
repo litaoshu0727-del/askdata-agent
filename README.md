@@ -185,6 +185,7 @@ python -m eval.runner --case E36                                # 单题
 python -m eval.runner --dataset chinook --meta ab --repeat 3    # 元数据消融
 python -m eval.runner --bank holdout3 --repeat 3                # 留出集（已用过会提醒）
 python -m eval.rejudge_runs                                     # 判分改了以后重判存下的运行记录（不调模型）
+python -m eval.multiturn --dataset chinook --repeat 3           # 多轮追问：一组追问在一个新会话里问，每一轮单独判分
 python -m eval.runner --bank probes --tag 探针:一对多 --repeat 3  # 探针：整数相除、一对多连接
 python -m eval.probe_regression                                 # 全部探针一键回归，和上一次比
 python -m eval.runner --repeat 3 --save-runs runtime_data/runs/main.jsonl   # 保存过程记录

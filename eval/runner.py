@@ -270,9 +270,10 @@ class RunRecorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = path.open("a", encoding="utf-8")
 
-    def write(self, outcome: "CaseOutcome", arm: str, repeat_index: int) -> None:
+    def write(self, outcome: "CaseOutcome", arm: str, repeat_index: int, extra: Optional[Dict[str, Any]] = None) -> None:
         record = {
             **self.meta,
+            **(extra or {}),
             "arm": arm,
             "case_id": outcome.case.id,
             "query": outcome.case.query,
@@ -700,7 +701,13 @@ def run_case(pipeline: AskDataText2SQLPipeline, db_path: Path, case: EvalCase) -
             elapsed=time.time() - started,
         )
 
-    elapsed = time.time() - started
+    return judge_case(case, result, expected, time.time() - started)
+
+
+def judge_case(case: EvalCase, result: Any, expected: List[Dict[str, Any]], elapsed: float) -> CaseOutcome:
+    """
+    给一次运行判分。拆出来是为了多轮评测：那边的结果来自会话服务，判法和单轮一样。
+    """
     hit_columns = parse_hit_columns(result.schema_context)
     last_execution = result.step_logs[-1].execution_result if result.step_logs else {}
     matched, missed = score_requirements(case.must_hit_columns, hit_columns)

@@ -1,0 +1,96 @@
+{
+  "M1E01-1": [
+    "SELECT s.shop_name, ROUND(SUM(d.gmv), 2) AS gmv FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE d.stat_date BETWEEN '2024-05-01' AND '2024-05-31' GROUP BY s.shop_id, s.shop_name ORDER BY SUM(d.gmv) DESC LIMIT 5"
+  ],
+  "M1E01-2": [
+    "SELECT s.shop_name, ROUND(SUM(d.refund_amount), 2) AS refund_amount FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE s.shop_name IN ('臻品自营店15','优选旗舰店1','旗舰旗舰店7','臻品旗舰店4','旗舰自营店12') GROUP BY s.shop_id, s.shop_name"
+  ],
+  "M1E02-1": [
+    "SELECT c1.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c2 ON c2.category_id = p.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE o.order_status IN ('已支付','已完成','已退款') GROUP BY c1.category_id, c1.category_name",
+    "SELECT c1.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c2 ON c2.category_id = s.main_category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE o.pay_time IS NOT NULL GROUP BY c1.category_id, c1.category_name"
+  ],
+  "M1E02-2": [
+    "SELECT c2.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c2 ON c2.category_id = p.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE o.order_status IN ('已支付','已完成','已退款') AND c1.category_name = '数码电器' GROUP BY c2.category_id, c2.category_name",
+    "SELECT c2.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c2 ON c2.category_id = s.main_category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE o.pay_time IS NOT NULL AND c1.category_name = '数码电器' GROUP BY c2.category_id, c2.category_name"
+  ],
+  "M1E02-3": [
+    "SELECT p.brand, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c2 ON c2.category_id = p.category_id WHERE o.order_status IN ('已支付','已完成','已退款') AND c2.category_name = '电脑办公' GROUP BY p.brand",
+    "SELECT p.brand, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c2 ON c2.category_id = s.main_category_id WHERE o.pay_time IS NOT NULL AND c2.category_name = '电脑办公' GROUP BY p.brand"
+  ],
+  "M1E03-1": [
+    "SELECT u.member_level, COUNT(*) AS user_cnt, ROUND(COALESCE(SUM(x.paid), 0), 2) AS total_pay FROM dim_user u LEFT JOIN (SELECT user_id, SUM(pay_amount) AS paid FROM fact_order WHERE pay_time IS NOT NULL GROUP BY user_id) x ON x.user_id = u.user_id GROUP BY u.member_level"
+  ],
+  "M1E03-2": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id WHERE o.pay_time IS NOT NULL AND u.member_level = '钻石会员' GROUP BY u.user_id, u.user_name ORDER BY SUM(o.pay_amount) DESC LIMIT 5"
+  ],
+  "M1E03-4": [
+    "SELECT u.user_name, sh.shop_name FROM fact_order o JOIN dws_user_summary s ON s.user_id = o.user_id AND o.create_time = s.last_order_time JOIN dim_user u ON u.user_id = o.user_id JOIN dim_shop sh ON sh.shop_id = o.shop_id WHERE u.user_name IN ('用户10105','用户10068','用户10118','用户10035','用户10021')"
+  ],
+  "M1E04-1": [
+    "SELECT p.pay_channel, COUNT(*) AS pay_cnt, ROUND(SUM(o.pay_amount), 2) AS pay_total FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id WHERE o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND date(p.pay_time) <> date(o.create_time) GROUP BY p.pay_channel"
+  ],
+  "M1E04-2": [
+    "SELECT p.pay_channel, COUNT(*) AS pay_cnt, ROUND(SUM(o.pay_amount), 2) AS pay_total FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id WHERE o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND date(p.pay_time) <> date(o.create_time) AND o.channel = '直播间' GROUP BY p.pay_channel"
+  ],
+  "M1E04-4": [
+    "SELECT u.age_group, COUNT(*) AS pay_cnt, ROUND(SUM(o.pay_amount), 2) AS pay_total FROM fact_payment p JOIN fact_order o ON o.order_id = p.order_id JOIN dim_user u ON u.user_id = o.user_id WHERE o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND date(p.pay_time) <> date(o.create_time) AND p.pay_channel = '花呗分期' GROUP BY u.age_group"
+  ],
+  "M1E05-2": [
+    "SELECT c1.category_name, COUNT(*) AS refund_cnt, ROUND(SUM(r.refund_amount), 2) AS refund_total FROM fact_refund r JOIN (SELECT DISTINCT i.order_id, p.category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id) x ON x.order_id = r.order_id JOIN dim_category c2 ON c2.category_id = x.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE r.refund_reason = '商品质量问题' GROUP BY c1.category_id, c1.category_name"
+  ],
+  "M1E05-3": [
+    "SELECT s.shop_name, COUNT(*) AS refund_cnt, ROUND(SUM(r.refund_amount), 2) AS refund_total FROM fact_refund r JOIN (SELECT DISTINCT i.order_id, p.category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id) x ON x.order_id = r.order_id JOIN dim_category c2 ON c2.category_id = x.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id JOIN fact_order o ON o.order_id = r.order_id JOIN dim_shop s ON s.shop_id = o.shop_id WHERE r.refund_reason = '商品质量问题' AND c1.category_name = '美妆护肤' GROUP BY s.shop_id, s.shop_name"
+  ],
+  "M1E05-4": [
+    "SELECT c1.category_name, COUNT(*) AS refund_cnt, ROUND(SUM(r.refund_amount), 2) AS refund_total FROM fact_refund r JOIN (SELECT DISTINCT i.order_id, p.category_id FROM fact_order_item i JOIN dim_product p ON p.product_id = i.product_id) x ON x.order_id = r.order_id JOIN dim_category c2 ON c2.category_id = x.category_id JOIN dim_category c1 ON c1.category_id = c2.parent_category_id WHERE r.refund_reason = '七天无理由' GROUP BY c1.category_id, c1.category_name"
+  ],
+  "M1E06-1": [
+    "SELECT c.category_name, ROUND(AVG(b.stay_seconds), 1) AS avg_stay FROM fact_user_behavior b JOIN dim_product p ON p.product_id = b.product_id JOIN dim_shop s ON s.shop_id = p.shop_id JOIN dim_category c ON c.category_id = s.main_category_id WHERE b.behavior_type = '浏览' AND b.behavior_time >= '2024-05-01' AND b.behavior_time < '2024-06-01' GROUP BY c.category_id, c.category_name HAVING AVG(b.stay_seconds) > 300"
+  ],
+  "M1E06-2": [
+    "SELECT c.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id JOIN dim_category c ON c.category_id = p.category_id WHERE o.order_status IN ('已支付','已完成','已退款') AND o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND c.category_name IN ('家用电器','生鲜果蔬','休闲零食') GROUP BY c.category_id, c.category_name",
+    "SELECT c.category_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_shop s ON s.shop_id = o.shop_id JOIN dim_category c ON c.category_id = s.main_category_id WHERE o.pay_time IS NOT NULL AND o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND c.category_name IN ('家用电器','生鲜果蔬','休闲零食') GROUP BY c.category_id, c.category_name"
+  ],
+  "M1E06-4": [
+    "SELECT c.category_name, COUNT(*) AS view_cnt FROM fact_user_behavior b JOIN dim_product p ON p.product_id = b.product_id JOIN dim_shop s ON s.shop_id = p.shop_id JOIN dim_category c ON c.category_id = s.main_category_id WHERE b.behavior_type = '浏览' AND b.behavior_time >= '2024-05-01' AND b.behavior_time < '2024-06-01' AND c.category_name IN ('家用电器','生鲜果蔬','休闲零食') GROUP BY c.category_id, c.category_name"
+  ],
+  "M1E07-1": [
+    "SELECT s.city, SUM(d.order_count) AS order_cnt FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE d.stat_date BETWEEN '2024-05-01' AND '2024-05-31' GROUP BY s.city"
+  ],
+  "M1E07-2": [
+    "SELECT s.shop_name, SUM(d.order_count) AS order_cnt FROM dws_shop_daily d JOIN dim_shop s ON s.shop_id = d.shop_id WHERE d.stat_date BETWEEN '2024-05-01' AND '2024-05-31' AND s.city = '成都' GROUP BY s.shop_id, s.shop_name"
+  ],
+  "M1E08-1": [
+    "SELECT date(o.create_time) AS d, ROUND(SUM(o.order_amount), 2) AS gmv FROM fact_order o WHERE o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' GROUP BY date(o.create_time) ORDER BY SUM(o.order_amount) DESC LIMIT 1"
+  ],
+  "M1E08-2": [
+    "SELECT s.shop_name, ROUND(SUM(o.order_amount), 2) AS gmv FROM fact_order o JOIN dim_shop s ON s.shop_id = o.shop_id WHERE date(o.create_time) = '2024-05-26' GROUP BY s.shop_id, s.shop_name ORDER BY SUM(o.order_amount) DESC LIMIT 3"
+  ],
+  "M1E10-2": [
+    "SELECT i.product_id, p.product_name, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_product p ON p.product_id = i.product_id WHERE o.order_status IN ('已支付','已完成','已退款') AND o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND i.product_id IN (30041, 30031, 30023) GROUP BY i.product_id, p.product_name"
+  ],
+  "M1E10-3": [
+    "SELECT u.member_level, SUM(i.quantity) AS qty FROM fact_order o JOIN fact_order_item i ON i.order_id = o.order_id JOIN dim_user u ON u.user_id = o.user_id WHERE o.order_status IN ('已支付','已完成','已退款') AND o.create_time >= '2024-05-01' AND o.create_time < '2024-06-01' AND i.product_id = 30023 GROUP BY u.member_level"
+  ],
+  "M1E12-1": [
+    "SELECT u.user_name, COUNT(*) AS total_order_count FROM fact_order o JOIN dim_user u ON u.user_id = o.user_id GROUP BY u.user_id, u.user_name ORDER BY COUNT(*) DESC LIMIT 4"
+  ],
+  "M1E12-4": [
+    "SELECT u.user_name, COUNT(*) AS refund_order_count FROM fact_refund r JOIN fact_order o ON o.order_id = r.order_id JOIN dim_user u ON u.user_id = o.user_id WHERE u.user_name IN ('用户10016','用户10122','用户10129','用户10173') GROUP BY u.user_id, u.user_name"
+  ],
+  "M1C02-1": [
+    "SELECT c.Country, ROUND(SUM(i.Total), 2) AS total FROM Invoice i JOIN Customer c ON c.CustomerId = i.CustomerId GROUP BY c.Country ORDER BY SUM(i.Total) DESC LIMIT 5"
+  ],
+  "M1C02-2": [
+    "SELECT BillingCountry, COUNT(DISTINCT CustomerId) AS customer_cnt FROM Invoice WHERE BillingCountry IN ('USA','Canada','France','Brazil','Germany') GROUP BY BillingCountry"
+  ],
+  "M1C02-3": [
+    "SELECT c.FirstName, c.LastName, ROUND(SUM(i.Total), 2) AS spent FROM Customer c JOIN Invoice i ON i.CustomerId = c.CustomerId WHERE i.BillingCountry = 'USA' GROUP BY c.CustomerId, c.FirstName, c.LastName ORDER BY SUM(i.Total) DESC LIMIT 3"
+  ],
+  "M1C06-1": [
+    "SELECT i.InvoiceId, c.City, i.Total FROM Invoice i JOIN Customer c ON c.CustomerId = i.CustomerId WHERE i.InvoiceDate >= '2024-07-01' AND i.InvoiceDate < '2024-10-01' AND i.Total > 10"
+  ],
+  "M1C06-2": [
+    "SELECT i.InvoiceId, c.City, i.Total FROM Invoice i JOIN Customer c ON c.CustomerId = i.CustomerId WHERE i.InvoiceDate >= '2023-07-01' AND i.InvoiceDate < '2023-10-01' AND i.Total > 10"
+  ]
+}

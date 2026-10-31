@@ -49,6 +49,21 @@ class EvalCase:
     """
 
 
+@dataclass
+class MultiTurnCase:
+    """
+    一组多轮追问：在同一个新会话里按顺序问，每一轮单独判分。
+
+    每一轮是一道 EvalCase：query 是用户这一轮实际说的话（带着指代、省略），
+    reference_sql 是结合前面的问答、这一轮真正问的东西，单独就能执行。
+    """
+
+    id: str
+    turns: List[EvalCase]
+    tags: List[str] = field(default_factory=list)
+    note: str = ""
+
+
 CASES: List[EvalCase] = [
     EvalCase(
         id="E01",
