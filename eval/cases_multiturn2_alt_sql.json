@@ -1,0 +1,47 @@
+{
+  "M2E02-1": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay_amount\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nWHERE u.member_level = '钻石会员' AND o.pay_time IS NOT NULL\nGROUP BY u.user_id, u.user_name\nORDER BY total_pay_amount DESC\nLIMIT 5"
+  ],
+  "M2E02-2": [
+    "SELECT u.user_name, MAX(o.create_time) AS last_order_time\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nWHERE u.user_id IN (10105, 10068, 10118, 10035, 10021)\nGROUP BY u.user_id, u.user_name"
+  ],
+  "M2E02-3": [
+    "SELECT c.category_name, ROUND(SUM(x.pay_amount), 2) AS pay_amount\nFROM (\n    SELECT DISTINCT o.order_id, o.pay_amount, p.category_id\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    WHERE o.user_id = 10105 AND o.pay_time IS NOT NULL\n) x\nJOIN dim_category c ON c.category_id = x.category_id\nGROUP BY c.category_id, c.category_name"
+  ],
+  "M2E02-4": [
+    "SELECT c.category_name, ROUND(SUM(x.pay_amount), 2) AS pay_amount\nFROM (\n    SELECT DISTINCT o.order_id, o.pay_amount, p.category_id\n    FROM fact_order o\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    WHERE o.user_id = 10068 AND o.pay_time IS NOT NULL\n) x\nJOIN dim_category c ON c.category_id = x.category_id\nGROUP BY c.category_id, c.category_name"
+  ],
+  "M2E06-1": [
+    "SELECT u.city, COUNT(DISTINCT u.user_id) AS user_cnt,\n       ROUND(SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END), 2) AS total_pay_amount\nFROM dim_user u\nLEFT JOIN fact_order o ON o.user_id = u.user_id\nWHERE u.province = '广东'\nGROUP BY u.city"
+  ],
+  "M2E06-2": [
+    "SELECT u.user_name, ROUND(SUM(o.pay_amount), 2) AS total_pay_amount\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nWHERE u.city = '深圳' AND o.pay_time IS NOT NULL\nGROUP BY u.user_id, u.user_name\nORDER BY total_pay_amount DESC\nLIMIT 3"
+  ],
+  "M2E06-4": [
+    "SELECT u.user_name, COUNT(*) AS browse_cnt, SUM(b.stay_seconds) AS stay_seconds\nFROM fact_user_behavior b\nJOIN dim_user u ON u.user_id = b.user_id\nWHERE b.behavior_type = '浏览'\n  AND b.user_id IN (\n      SELECT o.user_id\n      FROM fact_order o\n      JOIN dim_user u2 ON u2.user_id = o.user_id\n      WHERE u2.city = '广州' AND o.pay_time IS NOT NULL\n      GROUP BY o.user_id\n      ORDER BY SUM(o.pay_amount) DESC\n      LIMIT 3\n  )\nGROUP BY u.user_id, u.user_name"
+  ],
+  "M2E08-4": [
+    "SELECT s.shop_name, SUM(d.order_count) AS order_cnt\nFROM dim_shop s\nJOIN dws_shop_daily d ON d.shop_id = s.shop_id\nWHERE s.shop_id = (SELECT shop_id FROM dim_product WHERE product_id = 30018)\nGROUP BY s.shop_id, s.shop_name"
+  ],
+  "M2E09-2": [
+    "SELECT u.gender, ROUND(SUM(o.pay_amount), 2) AS total_pay_amount\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nWHERE u.age_group = '50以上' AND o.pay_time IS NOT NULL\nGROUP BY u.gender"
+  ],
+  "M2E09-3": [
+    "SELECT c.category_name, COUNT(*) AS order_cnt\nFROM (\n    SELECT DISTINCT o.order_id, p.category_id\n    FROM fact_order o\n    JOIN dim_user u ON u.user_id = o.user_id\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    WHERE u.age_group = '50以上' AND u.gender = '女' AND o.pay_time IS NOT NULL\n) x\nJOIN dim_category c ON c.category_id = x.category_id\nGROUP BY c.category_id, c.category_name\nORDER BY order_cnt DESC\nLIMIT 1"
+  ],
+  "M2E09-4": [
+    "SELECT c.category_name, COUNT(*) AS order_cnt\nFROM (\n    SELECT DISTINCT o.order_id, p.category_id\n    FROM fact_order o\n    JOIN dim_user u ON u.user_id = o.user_id\n    JOIN fact_order_item i ON i.order_id = o.order_id\n    JOIN dim_product p ON p.product_id = i.product_id\n    WHERE u.age_group = '50以上' AND u.gender = '男' AND o.pay_time IS NOT NULL\n) x\nJOIN dim_category c ON c.category_id = x.category_id\nGROUP BY c.category_id, c.category_name\nORDER BY order_cnt DESC\nLIMIT 1"
+  ],
+  "M2E10-4": [
+    "SELECT ROUND(SUM(pay_amount), 2) AS total_pay_amount\nFROM fact_order\nWHERE user_id = 10156 AND pay_time IS NOT NULL"
+  ],
+  "M2E12-3": [
+    "SELECT u.user_name, COUNT(o.order_id) AS total_order_count,\n       ROUND(SUM(CASE WHEN o.pay_time IS NOT NULL THEN o.pay_amount ELSE 0 END), 2) AS total_pay_amount\nFROM dim_user u\nJOIN fact_order o ON o.user_id = u.user_id\nWHERE u.register_time >= '2024-01-01' AND u.register_time < '2025-01-01'\n  AND u.register_channel = '小程序'\nGROUP BY u.user_id, u.user_name"
+  ],
+  "M2C02-3": [
+    "SELECT c.Country, COUNT(*) AS sold_cnt\nFROM Track t\nJOIN Album al ON al.AlbumId = t.AlbumId\nJOIN InvoiceLine il ON il.TrackId = t.TrackId\nJOIN Invoice i ON i.InvoiceId = il.InvoiceId\nJOIN Customer c ON c.CustomerId = i.CustomerId\nWHERE t.Composer LIKE '%Chris Cornell%'\n  AND al.ArtistId = 132\nGROUP BY c.Country"
+  ],
+  "M2C02-4": [
+    "SELECT c.Country, COUNT(*) AS sold_cnt\nFROM Track t\nJOIN Album al ON al.AlbumId = t.AlbumId\nJOIN InvoiceLine il ON il.TrackId = t.TrackId\nJOIN Invoice i ON i.InvoiceId = il.InvoiceId\nJOIN Customer c ON c.CustomerId = i.CustomerId\nWHERE t.Composer LIKE '%Chris Cornell%'\n  AND al.ArtistId = 8\nGROUP BY c.Country"
+  ]
+}

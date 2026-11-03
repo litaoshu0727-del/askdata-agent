@@ -22,7 +22,7 @@ SQL 报错只打印异常类型：跑校验的人在冻结前不该看到题。
   组内取前 N（ROW_NUMBER）的，换成 RANK 结果行数变了就是有并列
 - 参考 SQL 输出列用了 ROUND，题面要写明保留几位小数
 - 题面不出现表名、字段名；难度分布；带指定考点的非陷阱题过半；标了多表连接的至少用到 4 张表；表覆盖
-- 去重：和全部已有题库（含探针）以及这一套自己的其他题比，问法相似度 >= 0.6 或参考答案结果集相同；多轮追问只比第 1 轮
+- 去重：和全部已有题库（含探针、已有的多轮题）以及这一套自己的其他题比，问法相似度 >= 0.6 或参考答案结果集相同；多轮追问只比第 1 轮
 - 多轮追问的结构：每组 3–4 轮、轮的题号是 组号-轮次、第 1 轮不是陷阱也不标追问形式、每轮追问标了规范里的形式、
   每组至少两种形式、陷阱轮的下一轮标了跨轮、指代的上一轮不超过 10 行、每种形式的次数、至少 2 组跨轮
 """
@@ -42,6 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from eval.multiturn import load_banks as load_multiturn_banks  # noqa: E402
 from eval.runner import BANKS, DATASETS, case_ndigits, rows_match  # noqa: E402
 
 TRAP_SQL = "SELECT 1 WHERE 0"
@@ -183,6 +184,10 @@ def main() -> None:
             fail(c.id, "题号格式不对")
     existing = {case.id for bank, banks in BANKS.items() if bank != args.self_bank for pool in banks.values() for case in pool} | \
                {case.id for pool, _, _ in DATASETS.values() for case in pool}
+    # 已有的多轮题库：组号和每一轮的题号都不能撞
+    multiturn = {bank: banks for bank, banks in load_multiturn_banks().items() if bank != args.self_bank}
+    existing |= {item.id for banks in multiturn.values() for pool in banks.values()
+                 for chain in pool for item in [chain, *chain.turns]}
     for c in units:
         if c.id in existing:
             fail(c.id, "题号和已有题库撞了")
@@ -258,6 +263,9 @@ def main() -> None:
     old = [(f"{bank}:{case.id}", case) for bank, banks in BANKS.items() if bank != args.self_bank
            for case in banks.get(args.dataset) or []]
     old += [(f"main:{case.id}", case) for case in DATASETS[args.dataset][0]]
+    # 已有多轮题库同样只比第 1 轮
+    old += [(f"{bank}:{chain.turns[0].id}", chain.turns[0]) for bank, banks in multiturn.items()
+            for chain in banks.get(args.dataset) or [] if chain.turns]
     dups = []
     for c in real:
         for label, other in old:

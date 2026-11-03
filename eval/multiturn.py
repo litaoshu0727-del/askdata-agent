@@ -64,6 +64,12 @@ def load_banks() -> Dict[str, Dict[str, List[MultiTurnCase]]]:
         pass
     else:
         banks["multiturn1"] = MULTITURN1_BANKS
+    try:
+        from eval.cases_multiturn2 import MULTITURN2_BANKS
+    except ImportError:
+        pass
+    else:
+        banks["multiturn2"] = MULTITURN2_BANKS
     return banks
 
 
