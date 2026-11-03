@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -31,7 +32,15 @@ from llm_http import post_json
 REFERENCE_MARKERS = (
     "它们", "他们", "她们", "它", "这些", "那些", "这几个", "那几个",
     "这个", "那个", "刚才", "上面", "前面", "上述", "该", "其中",
-    "同样", "再看", "还有呢", "以上",
+    "同样", "再看", "还有呢", "以上", "回到", "上一轮",
+)
+
+# 固定词列不全：第一套多轮题里"这几家""这三个品牌""这3个""浏览最多的那位""那家公司"都没触发改写。
+#   这/那 + 数量（可省）+ 量词：这几家、这三个、这3个、那位、那家、这张……
+#   省略式追问："2023年同一季度呢？""PG-13 的呢？"
+REFERENCE_PATTERNS = (
+    re.compile(r"[这那](?:[几两一二三四五六七八九十百\d]+)?[个位家张部首条款种类笔件名只本支批份项单]"),
+    re.compile(r"呢\s*(?:[？?，,。]|$)"),
 )
 
 REWRITE_PROMPT = """你是一个对话式数据查询系统的 Query 改写模块。
@@ -77,7 +86,9 @@ class QueryRewriterConfig:
     chat_url: str = ""
     model: str = ""
     timeout: int = 60
-    max_context_chars: int = 2000
+    # 只防窗口之外的调用方传进超长文本。会话记忆窗口才是真正的上限（网页和评测都是最多 8 条消息、约 4000 token）。
+    # 原来是 2000 字，从头截：第 4 轮回到第 1 轮时，第 1 轮的回答被截掉一半，改写只写进了剩下的几张发票（M1C06-4）。
+    max_context_chars: int = 16000
     extra_payload: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -112,7 +123,9 @@ class ContextualQueryRewriter:
     @staticmethod
     def looks_contextual(query: str) -> bool:
         """当前 Query 里是否出现了疑似指代词。"""
-        return any(marker in query for marker in REFERENCE_MARKERS)
+        return any(marker in query for marker in REFERENCE_MARKERS) or any(
+            pattern.search(query) for pattern in REFERENCE_PATTERNS
+        )
 
     def rewrite(self, query: str, conversation_context: str) -> RewriteResult:
         """

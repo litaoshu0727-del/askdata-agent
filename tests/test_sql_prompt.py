@@ -20,6 +20,8 @@ from pathlib import Path  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest, TableColumn, TableSchema  # noqa: E402
+from cot_planning.objects import CotPlanningRequest  # noqa: E402
+from cot_planning.prompt_builder import CotPromptBuilder  # noqa: E402
 from sql_generation.prompt_builder import SQLITE_RULES, SqlPromptBuilder  # noqa: E402
 
 
@@ -182,6 +184,19 @@ class RepairErrorAnalysisTestCase(unittest.TestCase):
         self.assertNotIn("# 报错分析", self.repair_prompt('near "HAVING": syntax error'))
         self.assertNotIn("# 报错分析", self.repair_prompt("no such function: YEAR"))
 
+
+
+class PlannerPromptTestCase(unittest.TestCase):
+    """规划提示词：SQL 生成只看得到规划，具体值必须写进规划。"""
+
+    def test_named_values_must_be_written_into_the_plan(self):
+        """
+        第一套多轮题 M1C01-2、M1E01-2：规划只写了"用户列出的 7 个流派""会话记忆中前5的店铺"，
+        SQL 生成器看不到对话，编出了 Rock、Jazz 和"店铺A–E"。
+        """
+        prompt = CotPromptBuilder().build(CotPlanningRequest(user_query="这些流派各卖出去多少份？", schema_context="Genre(Name)"))
+        self.assertIn("必须原样写进操作指令", prompt)
+        self.assertIn("看不到用户Query和会话记忆", prompt)
 
 if __name__ == "__main__":
     unittest.main()

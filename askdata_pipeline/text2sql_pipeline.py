@@ -25,7 +25,13 @@ from sql_generation import (
 
 from .demo_data import create_trade_demo_database, get_trade_business_meta
 from .filter_guard import FilterValueGuard
-from .result_shape import finer_grain_mismatch, group_topn_overflow, single_value_mismatch, window_filtered_previous
+from .result_shape import (
+    finer_grain_mismatch,
+    group_topn_overflow,
+    mixed_and_or,
+    single_value_mismatch,
+    window_filtered_previous,
+)
 from .chinook_data import (
     create_chinook_database,
     get_chinook_business_meta,
@@ -343,11 +349,15 @@ class AskDataText2SQLPipeline:
             # 结果检查：SQL 能执行、不报错，修正碰不到的几类错，按顺序查，第一项触发就带提示重新生成一次，
             # 新结果不再可疑就采用，否则保留原结果；一道题最多重新生成一次。只看最后一步——多步规划里中间
             # 步骤返回多行是正常的。判定都在 result_shape.py，不解析 SQL，看最外层结构和执行结果：
+            #   括号：WHERE 里 AND 和 OR 写在同一层没加括号（第一套多轮题 M1C07-2、M1S04-4）。只看 SQL 文本；
+            #         它错了，后面几项看到的就是错的结果，所以排在最前面
             #   形状：问题只要一个数，结果却有好几行（两层聚合压成了一层，第六套）
             #   粒度：数了组合没数对象、同一个维度出现好几行（第九套 H9S13、第七套 H7E21）
             #   窗口：LAG / LEAD 和按时间筛选写在同一层，范围内第一期的上一期被筛掉了（H9S07、H8C02）
             #   前 N：问每组前 N，结果的分组列某个值超过 N 行（H9S02）
             post_checks = [
+                (Codes.RESULT_PRECEDENCE_SUSPECT, "括号修正", "筛选条件里 AND 和 OR 写在同一层、没加括号，已带提示重新生成一次",
+                 lambda sql, result, request: mixed_and_or(sql)),
                 (Codes.RESULT_SHAPE_SUSPECT, "形状修正", "问题只要一个数，结果却有多行，已带提示重新生成一次",
                  lambda sql, result, request: single_value_mismatch(guard_query, result.columns, len(result.rows or []))),
                 (Codes.RESULT_GRAIN_SUSPECT, "粒度修正", "分组比题目要的细（数了组合、或同一个维度出现好几行），已带提示重新生成一次",

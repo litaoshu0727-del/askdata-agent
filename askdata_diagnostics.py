@@ -149,6 +149,12 @@ class Codes:
     问每组前 N，结果的分组列（第一列）某个值超过 N 行：组内没截断。已带提示重新生成一次；新结果仍然可疑时保留原结果。
     """
 
+    RESULT_PRECEDENCE_SUSPECT = "RESULT_PRECEDENCE_SUSPECT"
+    """
+    WHERE / HAVING / ON 里 AND 和 OR 写在同一层、没加括号：AND 先算，OR 前面几项没被后面的条件筛选。多轮追问把
+    "他们"改写成几个人名之后最常见。已带提示重新生成一次；新 SQL 仍然没写明括号时保留原结果。
+    """
+
     RESULT_TRUNCATED = "RESULT_TRUNCATED"
     """
     结果超过行数上限（PipelineConfig.max_result_rows），只保留了前面那些行。上限比评测库里

@@ -328,3 +328,57 @@ def group_topn_overflow(query: str, columns, rows) -> Optional[str]:
         f"（共 {len(rows)} 行）。按组内前 N 写：汇总和 ROW_NUMBER() OVER (PARTITION BY 分组列 ORDER BY 指标 DESC) "
         f"写在同一层子查询里，外层只筛 rn <= {n}；外层不再 GROUP BY。"
     )
+
+
+# ---------------------------------------------------------------------------
+# AND 和 OR 写在同一层、没加括号（第一套多轮题 M1C07-2、M1S04-4、M1S07-2）：追问把"他们"改写成几个人名，
+# SQL 按名字逐个 OR 起来，后面再 AND 上这一轮的条件：
+#   WHERE (first='Jane' AND last='Peacock') OR (first='Steve' AND last='Johnson') AND c.Company IS NOT NULL
+# AND 比 OR 先算，条件只管到最后一个人，前面的人全表都算进去了。SQL 能执行、不报错，修正碰不到它。
+# 判定：WHERE / HAVING / ON 里，同一层括号内既有 AND 又有 OR。BETWEEN … AND … 的 AND、CASE … END 里面的不算。
+# 离线核对：全部题库 865 条参考答案一条都不触发；历史运行按题号和 SQL 去重 4625 条，触发 12 条，10 条错的都是这个毛病，
+# 2 条对的是有意写成"几组条件之间二选一"（H6E01、H9S28：A AND B OR C AND D）。所以提示不预设哪种分组，只要求按题意
+# 把括号写明——本来就对的，加了括号意思不变。
+# ---------------------------------------------------------------------------
+
+_CONDITION_CLAUSES = {"WHERE", "HAVING", "ON"}
+_CLAUSE_STARTS = {"SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "JOIN", "ON",
+                  "UNION", "INTERSECT", "EXCEPT", "WINDOW"}
+_TOKEN = re.compile(r"'(?:[^']|'')*'|\"[^\"]*\"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/|[()]|[A-Za-z_一-鿿][\w一-鿿]*", re.S)
+
+
+def mixed_and_or(sql: str) -> Optional[str]:
+    """筛选条件里 AND 和 OR 写在同一层、没加括号时，返回给修正提示用的说明；否则返回 None。"""
+    # 每层括号一帧：所在子句、见过 AND / OR 没有、还欠几个 BETWEEN 的 AND、在几层 CASE 里
+    frames = [{"clause": None, "and": False, "or": False, "between": 0, "case": 0}]
+    for token in _TOKEN.findall(sql or ""):
+        frame = frames[-1]
+        if token == "(":
+            frames.append({"clause": frame["clause"], "and": False, "or": False, "between": 0, "case": 0})
+            continue
+        if token == ")":
+            if len(frames) > 1:
+                frames.pop()
+            continue
+        word = token.upper()
+        if word in _CLAUSE_STARTS:
+            frame.update(clause=word, between=0)
+            frame["and"] = frame["or"] = False
+        elif word == "CASE":
+            frame["case"] += 1
+        elif word == "END" and frame["case"]:
+            frame["case"] -= 1
+        elif word == "BETWEEN":
+            frame["between"] += 1
+        elif word == "AND" and frame["between"]:
+            frame["between"] -= 1
+        elif word in ("AND", "OR") and not frame["case"] and frame["clause"] in _CONDITION_CLAUSES:
+            frame[word.lower()] = True
+            if frame["and"] and frame["or"]:
+                return (
+                    f"SQL 能执行，但 {frame['clause']} 里 AND 和 OR 写在了同一层、没加括号。AND 比 OR 先算："
+                    "A OR B AND 条件 等于 A OR (B AND 条件)，条件只作用在 OR 的最后一项上。按题目的意思用括号把分组写明："
+                    "条件要作用在 OR 的每一项上，就写成 (A OR B) AND 条件；本来就是几组条件之间二选一，就写成 "
+                    "(A AND B) OR (C AND D)。按名字筛一组对象时，也可以改成 IN。"
+                )
+    return None

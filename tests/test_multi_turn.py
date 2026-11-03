@@ -45,6 +45,14 @@ class ReferenceDetectionTestCase(unittest.TestCase):
             "刚才第一名叫什么",
             "上述店铺的转化率",
             "其中哪家最高",
+            # 第一套多轮题里原来没触发改写的说法
+            "这几家各退了多少钱？",
+            "这三个品牌的商品5月被加购了多少次？",
+            "这3个5月卖出去多少件？",
+            "浏览最多的那位，收藏过哪些商品？",
+            "消费最高的那家公司，买过哪些流派的曲目？",
+            "2023年同一季度呢？",
+            "回到那三张专辑，它们的曲目平均每首多长？",
         ]:
             with self.subTest(问题=query):
                 self.assertTrue(ContextualQueryRewriter.looks_contextual(query))
@@ -122,6 +130,22 @@ class RewriteWithStubModelTestCase(unittest.TestCase):
         result = rewriter.rewrite("它的退款金额是多少", CONTEXT)
 
         self.assertFalse(result.effective.startswith('"'))
+
+    def test_earlier_turns_reach_the_model(self):
+        """
+        原来只给模型最后 2000 字：第 4 轮回到第 1 轮时，第 1 轮的回答被截掉一半（M1C06-4）。
+        记忆窗口才是上限，窗口里的内容要原样给到。
+        """
+        prompts = []
+        rewriter = self._rewriter("回到 InvoiceId 292、298、299、306、311 这几张发票")
+        rewriter._call_model = lambda prompt: prompts.append(prompt) or "改写后的问题"
+        first_answer = "助手：查询结果：" + "、".join(str(292 + i) for i in range(200))
+        context = "[近期对话]\n用户：2024年第三季度金额超过10的发票\n" + first_answer + "\n" + "用户：后面几轮\n" * 300
+
+        rewriter.rewrite("回到2024年那几张发票", context)
+
+        self.assertGreater(len(context), 2000)
+        self.assertIn(first_answer, prompts[0])
 
     def test_model_failure_falls_back_to_original(self):
         rewriter = ContextualQueryRewriter(

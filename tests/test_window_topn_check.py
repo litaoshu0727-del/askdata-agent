@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 from askdata_diagnostics import Codes, silenced  # noqa: E402
 from askdata_pipeline.ecommerce_data import create_ecommerce_demo_database  # noqa: E402
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
-from askdata_pipeline.result_shape import group_topn_overflow, window_filtered_previous  # noqa: E402
+from askdata_pipeline.result_shape import group_topn_overflow, mixed_and_or, window_filtered_previous  # noqa: E402
 from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
 from eval.runner import BANKS, DATASETS  # noqa: E402
 from mcp_router.sqlite_executor import unique_column_names  # noqa: E402
@@ -128,6 +128,40 @@ class GroupTopNOverflowTest(unittest.TestCase):
                 self.assertEqual(bool(self.check(query, all_rows)), expected)
 
 
+class MixedAndOrTest(unittest.TestCase):
+    """M1C07-2、M1S04-4：追问把"他们"改写成几个人名，SQL 逐个 OR 起来，后面 AND 的条件只管到最后一个人。"""
+
+    def test_or_chain_followed_by_and(self):
+        sql = ("SELECT e.FirstName, COUNT(*) FROM Employee e JOIN Customer c ON e.EmployeeId = c.SupportRepId "
+               "WHERE (e.FirstName = 'Jane' AND e.LastName = 'Peacock') OR (e.FirstName = 'Steve' AND "
+               "e.LastName = 'Johnson') AND c.Company IS NOT NULL GROUP BY e.EmployeeId")
+        hint = mixed_and_or(sql)
+        self.assertIn("WHERE 里 AND 和 OR 写在了同一层", hint)
+
+    def test_mixed_inside_a_subquery_or_having(self):
+        for sql in (
+            "SELECT * FROM t WHERE id IN (SELECT id FROM u WHERE a = 1 OR b = 2 AND c = 3)",
+            "SELECT k FROM t GROUP BY k HAVING SUM(x) > 1 AND MIN(y) = 0 OR MAX(y) = 9",
+            "SELECT * FROM t JOIN u ON t.id = u.id AND u.a = 1 OR u.b = 2",
+        ):
+            with self.subTest(sql=sql):
+                self.assertTrue(mixed_and_or(sql))
+
+    def test_parenthesised_or_between_and_case_are_fine(self):
+        for sql in (
+            "SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3",
+            "SELECT * FROM t WHERE ((a = 1 AND b = 2) OR (a = 3 AND b = 4)) AND c = 5",
+            "SELECT * FROM t WHERE d BETWEEN '2005-07-01' AND '2005-07-31' AND (a = 1 OR a = 2)",
+            "SELECT * FROM t WHERE a = 1 OR b BETWEEN 1 AND 2",
+            "SELECT * FROM t WHERE CASE WHEN a = 1 AND b = 2 THEN 1 ELSE 0 END = 1 OR c = 3",
+            "SELECT * FROM t WHERE name = 'Rock AND Roll' OR name = 'Jazz'",
+            "SELECT a AND b OR c FROM t WHERE x = 1 AND y = 2",          # SELECT 列表里的不管
+            "SELECT * FROM t WHERE a = 1 AND b = 2 GROUP BY c ORDER BY d",
+        ):
+            with self.subTest(sql=sql):
+                self.assertIsNone(mixed_and_or(sql))
+
+
 class ReferenceAnswersAreNeverFlaggedTest(unittest.TestCase):
     """全部题库的参考答案都不触发：离线核对 573 道参考答案、7167 次通过的历史运行，两项误报都是 0。"""
 
@@ -151,6 +185,7 @@ class ReferenceAnswersAreNeverFlaggedTest(unittest.TestCase):
                     columns, rows = execute(conn, case.reference_sql)
                     self.assertIsNone(window_filtered_previous(case.reference_sql, columns, rows))
                     self.assertIsNone(group_topn_overflow(case.query, columns, rows))
+                    self.assertIsNone(mixed_and_or(case.reference_sql))
         finally:
             conn.close()
 
@@ -179,9 +214,10 @@ class PipelinePostCheckOrderTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_with(self, shape=None, grain=None, window=None, topn=None):
+    def run_with(self, shape=None, grain=None, window=None, topn=None, precedence=None):
         none = mock.Mock(return_value=None)
         patches = {
+            "mixed_and_or": precedence or none,
             "single_value_mismatch": shape or none,
             "finer_grain_mismatch": grain or none,
             "window_filtered_previous": window or none,
@@ -203,6 +239,14 @@ class PipelinePostCheckOrderTest(unittest.TestCase):
         self.assertEqual([entry["kind"] for entry in result.sql_trace], ["生成", "窗口修正"])
         self.assertIn(Codes.RESULT_WINDOW_SUSPECT, {item.code for item in result.diagnostics})
         topn.assert_not_called()
+
+    def test_precedence_fires_first(self):
+        precedence = mock.Mock(side_effect=["没加括号", None])
+        shape = mock.Mock(return_value="形状不对")
+        result = self.run_with(precedence=precedence, shape=shape)
+        self.assertEqual([entry["kind"] for entry in result.sql_trace], ["生成", "括号修正"])
+        self.assertIn(Codes.RESULT_PRECEDENCE_SUSPECT, {item.code for item in result.diagnostics})
+        shape.assert_not_called()
 
     def test_earlier_check_wins(self):
         grain = mock.Mock(side_effect=["粒度不对", None])
