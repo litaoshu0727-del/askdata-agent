@@ -87,6 +87,13 @@ class RewriteSkipTestCase(unittest.TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.skipped_reason, "未检测到指代词")
 
+    def test_first_turn_has_no_history(self):
+        """会话记忆先记下提问再查询：第一轮的"历史"里只有当前这一句，等于没有历史。"""
+        result = self.rewriter.rewrite("这个月的销售额是多少", "[近期对话]\n用户：这个月的销售额是多少")
+
+        self.assertFalse(result.changed)
+        self.assertEqual(result.skipped_reason, "无会话上下文")
+
     def test_missing_api_key_emits_diagnostic(self):
         """
         有指代词却没有 Key，是"多轮追问必定不正确"的状态，
@@ -130,6 +137,58 @@ class RewriteWithStubModelTestCase(unittest.TestCase):
         result = rewriter.rewrite("它的退款金额是多少", CONTEXT)
 
         self.assertFalse(result.effective.startswith('"'))
+
+    def test_basis_line_is_split_off(self):
+        """先写依据再写改写：只有"改写："后面那句往下传，依据留着排查用。"""
+        rewriter = self._rewriter(
+            "依据：G 1442、NC-17 1599、PG 1600、PG-13 1814、R 1666，\n最多的是 PG-13（1814）\n"
+            "改写：PG-13 分级的影片，按租出的门店拆开看看逾期笔数。"
+        )
+        result = rewriter.rewrite("逾期最多的那个分级，按租出的门店拆开看看。", CONTEXT)
+
+        self.assertEqual(result.effective, "PG-13 分级的影片，按租出的门店拆开看看逾期笔数。")
+        self.assertTrue(result.basis.startswith("G 1442"))
+        self.assertIn("最多的是 PG-13", result.basis)
+
+    def test_reply_without_format_is_taken_whole(self):
+        rewriter = self._rewriter("臻品自营店15的退款金额是多少")
+        result = rewriter.rewrite("它的退款金额是多少", CONTEXT)
+
+        self.assertEqual(result.effective, "臻品自营店15的退款金额是多少")
+        self.assertEqual(result.basis, "")
+
+    def test_current_question_is_not_in_history(self):
+        """
+        会话记忆里最近那条用户消息就是当前问题。留着它，新提示词下模型当它自包含、原样返回（M1S08-3）。
+        """
+        prompts = []
+        rewriter = self._rewriter("")
+        rewriter._call_model = lambda prompt: prompts.append(prompt) or "改写：NC-17 分级、标价 4.99 的影片里，被租次数最多的5部"
+        query = "标价4.99的那些里，被租次数最多的5部是哪些？"
+        context = (
+            "[近期对话]\n用户：NC-17 的那些，按租借标价拆开看看\n助手：查询结果：0.99、2.99、4.99\n"
+            f"用户：{query}\n[个人知识库召回]\n1. 常看 NC-17 影片"
+        )
+
+        rewriter.rewrite(query, context)
+
+        history = prompts[0].split("会话历史：")[1].split("用户当前问题：")[0]
+        self.assertNotIn(query, history)
+        self.assertIn("用户：NC-17 的那些", history)
+        self.assertIn("[个人知识库召回]", history)
+
+    def test_same_question_asked_before_stays_in_history(self):
+        """同一句话前面问过、已经有回答的，是历史，不能删。"""
+        prompts = []
+        rewriter = self._rewriter("")
+        rewriter._call_model = lambda prompt: prompts.append(prompt) or "改写：臻品自营店15的退款金额"
+        context = "[近期对话]\n用户：它们的退款金额呢\n助手：查询结果：100\n用户：它们的退款金额呢"
+
+        rewriter.rewrite("它们的退款金额呢", context)
+
+        history = prompts[0].split("会话历史：")[1].split("用户当前问题：")[0]
+        self.assertIn("用户：它们的退款金额呢\n助手：查询结果：100", history)
+        self.assertEqual(history.count("它们的退款金额呢"), 1)
 
     def test_earlier_turns_reach_the_model(self):
         """

@@ -18,6 +18,7 @@ import logging  # noqa: E402
 
 logging.getLogger("askdata").disabled = True
 
+import json
 import tempfile
 import threading
 import unittest
@@ -40,6 +41,7 @@ from askdata_pipeline import (
     MemoryAwareAskDataService,
     PipelineConfig,
 )
+from askdata_pipeline.conversation_service import ANSWER_PREVIEW_CHARS, answer_preview
 
 
 class BlockingSummarizer(ExtractiveMemorySummarizer):
@@ -246,6 +248,76 @@ class MemoryTestCase(unittest.TestCase):
             self.assertEqual(follow_up.memory_context.long_term_hits[0].memory.id, saved.id)
         finally:
             memory.close()
+
+
+def _result(columns, rows, sql="SELECT 1"):
+    return {
+        "database": "chinook_db", "sql": sql, "success": True, "columns": columns,
+        "rows": [dict(zip(columns, row)) for row in rows], "row_count": len(rows), "error": None, "truncated": False,
+    }
+
+
+class AnswerPreviewTestCase(unittest.TestCase):
+    """查库回答写进会话记忆的样子：追问的改写和 CoT 读到的上一轮结果。"""
+
+    def test_column_names_are_written_once(self):
+        preview = json.loads(answer_preview([_result(["Company", "TotalSpent"], [["JetBrains s.r.o.", 40.62]])]))
+
+        self.assertEqual(preview[0]["columns"], ["Company", "TotalSpent"])
+        self.assertEqual(preview[0]["rows"], [["JetBrains s.r.o.", 40.62]])
+        self.assertNotIn("rows_note", preview[0])
+
+    def test_ten_companies_fit(self):
+        """M1C07-3 那次运行的原样 SQL 和结果：原来的格式 1568 字，第 10 行（Apple Inc.）被截掉。"""
+        sql = (
+            "SELECT c.FirstName, c.LastName, c.Company, ROUND(SUM(i.Total), 2) AS TotalSpent FROM Customer c "
+            "JOIN Employee e ON c.SupportRepId = e.EmployeeId JOIN Invoice i ON i.CustomerId = c.CustomerId "
+            "WHERE ((e.FirstName = 'Jane' AND e.LastName = 'Peacock') OR (e.FirstName = 'Margaret' AND e.LastName = 'Park') "
+            "OR (e.FirstName = 'Steve' AND e.LastName = 'Johnson')) AND c.Company IS NOT NULL "
+            "GROUP BY c.CustomerId, c.FirstName, c.LastName, c.Company;"
+        )
+        rows = [
+            ["Luís", "Gonçalves", "Embraer - Empresa Brasileira de Aeronáutica S.A.", 39.62],
+            ["František", "Wichterlová", "JetBrains s.r.o.", 40.62],
+            ["Eduardo", "Martins", "Woodstock Discos", 37.62],
+            ["Alexandre", "Rocha", "Banco do Brasil S.A.", 37.62],
+            ["Roberto", "Almeida", "Riotur", 37.62],
+            ["Mark", "Philips", "Telus", 37.62],
+            ["Jennifer", "Peterson", "Rogers Canada", 38.62],
+            ["Frank", "Harris", "Google Inc.", 37.62],
+            ["Jack", "Smith", "Microsoft Corporation", 39.62],
+            ["Tim", "Goyer", "Apple Inc.", 38.62],
+        ]
+        result = _result(["FirstName", "LastName", "Company", "TotalSpent"], rows, sql)
+
+        self.assertGreater(len(json.dumps([result], ensure_ascii=False)), ANSWER_PREVIEW_CHARS)
+        preview = json.loads(answer_preview([result]))
+        self.assertEqual(preview[0]["rows"], rows)
+
+    def test_long_result_is_cut_at_whole_rows(self):
+        rows = [[f"客户{i}", i * 1.5] for i in range(200)]
+        text = answer_preview([_result(["name", "spent"], rows)])
+        preview = json.loads(text)
+
+        self.assertLessEqual(len(text), ANSWER_PREVIEW_CHARS)
+        kept = preview[0]["rows"]
+        self.assertGreater(len(kept), 10)
+        self.assertEqual(kept, rows[: len(kept)])
+        self.assertEqual(preview[0]["rows_note"], f"共 200 行，只列出前 {len(kept)} 行")
+
+    def test_last_step_gets_rows_first(self):
+        first = _result(["id"], [[i] for i in range(300)])
+        last = _result(["name", "spent"], [["JetBrains s.r.o.", 40.62], ["Embraer", 39.62]])
+        preview = json.loads(answer_preview([first, last]))
+
+        self.assertEqual(len(preview[1]["rows"]), 2)
+        self.assertIn("rows_note", preview[0])
+
+    def test_overlong_sql_falls_back_to_char_cut(self):
+        text = answer_preview([_result(["n"], [[1]], sql="SELECT " + "a" * 3000)])
+
+        self.assertLessEqual(len(text), ANSWER_PREVIEW_CHARS)
+        self.assertTrue(text.endswith("……"))
 
 
 if __name__ == "__main__":

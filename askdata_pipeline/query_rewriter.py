@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from askdata_diagnostics import Codes, OnceEmitter, emit
 from llm_config import resolve_chat_provider
@@ -43,24 +43,41 @@ REFERENCE_PATTERNS = (
     re.compile(r"呢\s*(?:[？?，,。]|$)"),
 )
 
+# 第 2、4、5、6 条来自第一套多轮题：
+#   第 4 条：挑"最多/最高"的那一个，候选和数值都在上下文里，照样挑错：五个分级里挑了 R（1666），最多的是 PG-13（1814）
+#     （M1S05-2）；JetBrains 40.62 和 Embraer 39.62 挑了后者（M1C07-4）。不开思考模式，就让它先把每一行抄出来比一遍再写结论。
+#   第 2 条：上一轮结果里有商品 ID 30023，改写只写了商品名，库里另一个商品同名，SQL 把两个一起算了（M1E10-3）。
+#   第 5 条："小程序的呢？"照搬了第 1 轮的问法，丢了上一轮的"按年龄段拆开"（M1E11-3）。
+#   第 4 条后半、第 6 条是拿真实会话回放新提示词时发现的：上一轮只查了最少的那一个，问倒数第二，改写自己补了一句
+#     "Purchased AAC 之外第二少"，其实是倒数第三（M1C08-4）；把上一轮的笔数写进了改写（M1S06-2）。
 REWRITE_PROMPT = """你是一个对话式数据查询系统的 Query 改写模块。
 
 任务：根据会话历史，把用户当前这句话改写成一个**自包含**的查询问题。
 
 要求：
 1. 把所有指代词（它们、这些、刚才那几个……）替换成会话历史中对应的具体对象。
-2. 指代对象要用历史结果里出现过的**原始值**，例如店铺名称就用店铺名称原文。
-3. 绝对不要凭空推断任何 ID。比如店铺名叫"臻品自营店15"，不代表它的 ID 是 15。
-4. 只补充指代信息，不要改变用户的查询意图，不要添加历史里没有的筛选条件。
-5. 如果当前问题本身已经自包含，原样返回。
-6. 只输出改写后的问题，不要解释，不要加引号。
+2. 指代对象要用历史结果里出现过的**原始值**，例如店铺名称就用店铺名称原文。历史结果里有这些对象的 ID 列，就把 ID 一起写上，例如"商品 30023（都乐 海南芒果 3斤）"——名称可能重名，ID 不会。没有 ID 列就只写名称。
+3. ID 只能照抄历史结果里 ID 列的值，绝对不要凭空推断。比如店铺名叫"臻品自营店15"，不代表它的 ID 是 15。
+4. 要按历史结果里的数值挑对象时（最多、最高、最少、最低、排第一……），先在"依据"里把每一行的对象和数值逐个抄出来、比出大小，再改写。以下情况不要挑，保留用户原来的说法，写明是哪一轮的什么结果，也不要自己解释排名：历史结果没有列全（写着"只列出前几行"或以"……"结尾）；历史结果里没有可比的那些数值（比如上一轮只查了第一名，用户问倒数第二）。
+5. 省略式追问（"小程序的呢？""PG-13 的呢？"）沿用被省略的那一轮的完整问法：一般是最近一轮；用户点明了"也按一级类目看"这类说法，就找对应的那一轮。指标、拆分维度、筛选条件照搬，只换掉用户这次说的部分。
+6. 改写里不要写历史结果里的统计数值（笔数、金额、销量……）：那是上一轮的答案，不是这一轮的条件。
+7. 只补充指代信息，不要改变用户的查询意图，不要添加历史里没有的筛选条件。
+8. 如果当前问题本身已经自包含，原样返回。
+
+只输出两行，不要别的：
+依据：第 4 条写比较过程，第 5 条写沿用的是哪一轮、照搬了什么；其余情况写"无"
+改写：改写后的问题
 
 会话历史：
 {context}
 
 用户当前问题：{query}
+"""
 
-改写后的问题："""
+# 依据那一行可能写好几行，取最后一个行首的"改写："。
+REWRITE_LINE = re.compile(r"^\s*改写\s*[：:]", re.M)
+# 会话记忆里的段落标题，去掉标题之后什么都不剩，就是没有历史。
+SECTION_HEADER = re.compile(r"^\[[^\]\n]+\]$", re.M)
 
 
 @dataclass
@@ -71,6 +88,7 @@ class RewriteResult:
     rewritten: str
     changed: bool = False
     skipped_reason: str = ""
+    basis: str = ""
 
     @property
     def effective(self) -> str:
@@ -138,7 +156,8 @@ class ContextualQueryRewriter:
         Returns:
             RewriteResult: 改写结果，失败时回退为原 Query。
         """
-        if not conversation_context.strip():
+        context = self._drop_current_question(conversation_context.strip(), query)
+        if not SECTION_HEADER.sub("", context).strip():
             return RewriteResult(original=query, rewritten=query, skipped_reason="无会话上下文")
 
         if not self.looks_contextual(query):
@@ -153,12 +172,11 @@ class ContextualQueryRewriter:
             )
             return RewriteResult(original=query, rewritten=query, skipped_reason="无 API Key")
 
-        context = conversation_context.strip()
         if len(context) > self.config.max_context_chars:
             context = context[-self.config.max_context_chars:]
 
         try:
-            rewritten = self._call_model(
+            reply = self._call_model(
                 REWRITE_PROMPT.format(context=context, query=query)
             )
         except Exception as exc:
@@ -169,6 +187,7 @@ class ContextualQueryRewriter:
             )
             return RewriteResult(original=query, rewritten=query, skipped_reason="调用失败")
 
+        basis, rewritten = self._split_reply(reply)
         rewritten = rewritten.strip().strip('"').strip("“”").strip()
 
         if not rewritten:
@@ -178,7 +197,33 @@ class ContextualQueryRewriter:
             original=query,
             rewritten=rewritten,
             changed=rewritten != query,
+            basis=basis,
         )
+
+    @staticmethod
+    def _drop_current_question(context: str, query: str) -> str:
+        """
+        会话记忆在查询之前就记下了这一轮的提问，历史里最近那条用户消息就是当前问题，去掉。
+
+        留着它，模型看到"历史里已经有这句话"就当它自包含、原样返回：
+        "标价4.99的那些里，被租次数最多的5部"3 次都没改写，丢了上一轮的 NC-17（M1S08-3）。
+        """
+        line = f"用户：{query.strip()}"
+        index = context.rfind(line)
+        if index < 0 or "\n助手：" in context[index:]:
+            return context
+        return (context[:index].rstrip() + context[index + len(line):]).strip()
+
+    @staticmethod
+    def _split_reply(reply: str) -> Tuple[str, str]:
+        """拆出依据和改写后的问题；没按两行格式写时，整段当作改写结果。"""
+        markers = list(REWRITE_LINE.finditer(reply))
+        if not markers:
+            return "", reply
+        basis = reply[: markers[-1].start()].strip()
+        basis = re.sub(r"^依据\s*[：:]\s*", "", basis)
+        lines = [line.strip() for line in reply[markers[-1].end():].splitlines() if line.strip()]
+        return basis, lines[0] if lines else ""
 
     def _call_model(self, prompt: str) -> str:
         """调用 Chat Completions 接口。"""
