@@ -191,5 +191,49 @@ class FilterValueGuardTest(unittest.TestCase):
         self.assertEqual(guard.value_columns, {})
 
 
+class RewriteWordsTest(unittest.TestCase):
+    """多轮追问里守卫看的是改写后的问题：改写器的用词不等于用户的要求（M2E05-4）。"""
+
+    REWRITTEN = "退款原因是质量问题的退款中，店铺类型为旗舰店的店铺各几笔"
+    SQL = ["SELECT s.shop_name, COUNT(*) FROM fact_refund r JOIN dim_shop s WHERE s.shop_type = '旗舰店'"]
+
+    def setUp(self):
+        self.guard = FilterValueGuard({
+            "退款中": {"fact_refund.refund_status"},
+            "退款成功": {"fact_refund.refund_status"},
+            "旗舰店": {"dim_shop.shop_type"},
+            "成都": {"dim_user.city"},
+            "已完成": {"fact_order.order_status"},
+            "取消": {"fact_order.order_status"},
+        })
+
+    def values(self, query, sqls=(), **kwargs):
+        return [item.value for item in self.guard.find_dropped(query, list(sqls) or ["SELECT 1"], **kwargs)]
+
+    def test_value_only_the_rewriter_wrote_is_not_checked(self):
+        spoken = "旗舰店那部分具体是哪几家店？\n退款原因是质量问题的退款一共多少笔？"
+        self.assertEqual(self.values(self.REWRITTEN, self.SQL, spoken=spoken), [])
+
+    def test_value_the_user_said_in_an_earlier_turn_is_still_checked(self):
+        spoken = "退款中的那些呢？\n旗舰店那部分具体是哪几家店？"
+        self.assertEqual(self.values(self.REWRITTEN, self.SQL, spoken=spoken), ["退款中"])
+
+    def test_without_spoken_the_query_counts_as_the_users_words(self):
+        self.assertEqual(self.values(self.REWRITTEN, self.SQL), ["退款中"])
+
+    def test_counted_in_is_scope_not_a_filter(self):
+        self.assertEqual(self.values("每种退款原因一共退了多少钱？退款中的也算"), [])
+        self.assertEqual(self.values("一共退了多少钱？退款成功和退款中都算"), [])
+
+    def test_counted_in_does_not_cross_punctuation(self):
+        self.assertEqual(self.values("已完成的订单有多少笔，取消的也算"), ["已完成"])
+
+    def test_value_inside_all_counted_is_not_a_mention(self):
+        self.assertEqual(self.guard.mentioned_values("不管退款有没有完成都算"), [])
+
+    def test_real_mention_next_to_all_counted_is_still_checked(self):
+        self.assertEqual(self.values("成都的退款有多少笔？不管有没有完成都算"), ["成都"])
+
+
 if __name__ == "__main__":
     unittest.main()

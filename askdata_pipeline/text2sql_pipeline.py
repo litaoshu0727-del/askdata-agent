@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,6 +49,9 @@ from .objects import PipelineConfig, PipelineResult, StepExecutionLog
 
 
 # CoT 判定"Schema 支撑不了"时会在四元组里留下的标记
+# 会话记忆里的用户消息，格式见 askdata_memory/objects.py 的 to_prompt_context。
+_USER_LINE = re.compile(r"^用户：(.*)$", re.M)
+
 MISSING_SCHEMA_MARKERS = ("缺失", "无法支撑", "不存在", "未找到", "没有该字段", "不支持")
 
 
@@ -188,6 +192,7 @@ class AskDataText2SQLPipeline:
                 contextual_query,
                 schema_graph,
                 guard_query=effective_query,
+                spoken=self._user_words(query, conversation_context),
                 trace=sql_trace,
                 attempt=attempt,
             )
@@ -213,6 +218,7 @@ class AskDataText2SQLPipeline:
         contextual_query: str,
         schema_graph,
         guard_query: str = "",
+        spoken: Optional[str] = None,
         guard_retry: bool = False,
         trace: Optional[List[Dict[str, Any]]] = None,
         attempt: int = 1,
@@ -420,7 +426,7 @@ class AskDataText2SQLPipeline:
         # 不觉得缺什么——E19 直接去掉了 behavior_type='浏览'，E51 拿
         # finish_time IS NOT NULL 凑"已完成"，降级记录都是空的。
         # 这里拿数据库的取值当裁判，不依赖 CoT 自觉。
-        dropped = self._find_dropped_filters(guard_query, step_logs, schema_graph)
+        dropped = self._find_dropped_filters(guard_query, step_logs, schema_graph, spoken)
 
         guard_graph = None
         if dropped and not guard_retry:
@@ -440,6 +446,7 @@ class AskDataText2SQLPipeline:
                 contextual_query + self._dropped_filter_hint(dropped),
                 guard_graph,
                 guard_query=guard_query,
+                spoken=spoken,
                 guard_retry=True,
                 trace=trace,
                 attempt=attempt,
@@ -476,7 +483,12 @@ class AskDataText2SQLPipeline:
 
         return run
 
-    def _find_dropped_filters(self, guard_query: str, step_logs, schema_graph=None) -> list:
+    @staticmethod
+    def _user_words(query: str, conversation_context: str) -> str:
+        """用户自己说过的话：当前问题加会话记忆里的用户消息。守卫只查这里面有的取值，见 filter_guard.py 例外二。"""
+        return "\n".join([query, *_USER_LINE.findall(conversation_context or "")])
+
+    def _find_dropped_filters(self, guard_query: str, step_logs, schema_graph=None, spoken: Optional[str] = None) -> list:
         """
         跑通了 SQL 才查；CoT 判缺失、没生成 SQL 的情况不归这里管。
 
@@ -498,6 +510,7 @@ class AskDataText2SQLPipeline:
             guard_query,
             [log.sql for log in step_logs],
             scope_tables=scope,
+            spoken=spoken,
         )
 
     @staticmethod

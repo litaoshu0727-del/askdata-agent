@@ -198,5 +198,12 @@ class PlannerPromptTestCase(unittest.TestCase):
         self.assertIn("必须原样写进操作指令", prompt)
         self.assertIn("看不到用户Query和会话记忆", prompt)
 
+    def test_plan_groups_only_by_what_the_question_asks_to_split(self):
+        """M1C03-2、M2C05-3：规划把统计范围里的客户也放进了分组。SQL 照规划写，所以规则在规划这边。"""
+        prompt = CotPromptBuilder().build(CotPlanningRequest(user_query="这些客户每年消费多少？", schema_context="Invoice(Total)"))
+        self.assertIn("分组只按题目明确要分开看的维度", prompt)
+        self.assertIn("每位客户每年", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

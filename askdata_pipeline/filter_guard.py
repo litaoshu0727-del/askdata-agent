@@ -29,6 +29,20 @@
 题目已经说了「已支付」按什么判断，再拿枚举取值去纠正，就是把对的改成错的。
 和 E51 的错 SQL（finish_time IS NOT NULL 凑"已完成"）结构上一模一样，SQL 这一侧
 分不开，能分开它们的只有问题本身：E51 没给口径，H3E13 给了。
+
+例外二：取值不是用户说的。多轮追问里守卫看的是改写后的问题，改写器的用词也会被当成用户的要求。
+
+    M2E05-4「回到按店铺类型拆的那个结果：旗舰店那部分具体是哪几家店？」
+        改写成「……商品质量问题的退款中，店铺类型为旗舰店……」，这个"中"是"在这些退款里"
+        首轮 SQL 没按状态筛，是对的，8 行；守卫看到"退款中"是 refund_status 的取值，带提示重规划
+        → refund_status = '退款中'，2 行。第二套这样错了 3 次（含补跑前那次运行）
+
+    M2E03-3、M1E10-3 同一类：改写写"商品 30021（美的 电饭煲 4L）"，SQL 按 ID 筛，是对的，
+    守卫拿商品名去查。两套多轮题里这种触发 13 次，4 次把对的改错，1 次第一版错、最后对。
+
+例外三：取值后面跟着"也算、都算"（退款中的也算），说的是它也在范围里，不是要按它筛。
+全部 840 道题里形如这样的取值 9 处，8 处参考 SQL 用不到这个取值；H12 用到了（已支付、已完成、已退款的都算，
+写成 IN），这时只跳过紧挨"都算"的已退款，同一句里的已支付、已完成照样查。
 """
 
 from __future__ import annotations
@@ -45,6 +59,13 @@ TEXT_TYPE_MARKERS = ("CHAR", "TEXT", "CLOB")
 #   已支付过的订单（支付时间不为空）    已支付买家指……支付时间不为空的买家
 # 不跨标点是为了不误伤 E55「上海店铺的销售额，减去上旬（1日到10日）」这种括号说的是别的事。
 _OWN_DEFINITION = re.compile(r"[^，。；、,;:：！？!?\s]{0,4}?(?:[（(]|是指|指|即|定义为)")
+
+# 取值后面跟着"也算、都算"：退款中的也算、退款成功和退款中都算。同样不跨标点：「已完成的订单，取消的也算」里的
+# 已完成是要筛的。
+_COUNTED_IN = re.compile(r"[^，。；、,;:：！？!?\s]{0,6}?(?:也算|都算|也包括|都包括|也要算|都要算|也统计|都统计)")
+
+# 取值的最后一个字其实属于"都算"：「不管退款有没有完成都算」里并没有成都（M2E05-1 因此每次都多重规划一次）。
+_ALL_COUNTED = ("都算", "都要算", "都包括", "都统计")
 
 
 @dataclass
@@ -153,7 +174,7 @@ class FilterValueGuard:
             for match in self._iter_matches(query, value):
                 start, end = match.span()
 
-                if any(taken[start:end]):
+                if any(taken[start:end]) or query.startswith(_ALL_COUNTED, end - 1):
                     continue
 
                 for index in range(start, end):
@@ -175,7 +196,7 @@ class FilterValueGuard:
         checked: List[str] = []
 
         for value, spans in self._mentions(query).items():
-            if any(_OWN_DEFINITION.match(query, end) for _, end in spans):
+            if any(_OWN_DEFINITION.match(query, end) or _COUNTED_IN.match(query, end) for _, end in spans):
                 continue
 
             if all(self._shadowed(query, value, start, end) for start, end in spans):
@@ -208,6 +229,7 @@ class FilterValueGuard:
         query: str,
         sqls: Iterable[str],
         scope_tables: Optional[Iterable[str]] = None,
+        spoken: Optional[str] = None,
     ) -> List[DroppedFilter]:
         """
         问题提到了、SQL 却没用上的取值。
@@ -219,13 +241,16 @@ class FilterValueGuard:
         scope_tables：只看所属表在这些表里的取值。链路传的是这次检索选中的表加外键一跳——
         E19 的行为表、E51 的订单表都选中了；"北京用户"漏了用户表时，用户表也是订单表的
         一跳邻居。和问题无关的业务域的取值（"通过"是面试结果、"小时"是更新频率）就不查了。
+
+        spoken：用户自己说过的话。query 是改写后的问题时传这个，不在里面的取值是改写器加的，不查。
+        不传就认为 query 就是用户的原话。
         """
         sql_text = "\n".join(sqls)
         dropped: List[DroppedFilter] = []
         scope = set(scope_tables) if scope_tables is not None else None
 
         for value in self.checked_values(query):
-            if value in sql_text:
+            if value in sql_text or (spoken is not None and value not in spoken):
                 continue
 
             columns = sorted(self.value_columns[value])

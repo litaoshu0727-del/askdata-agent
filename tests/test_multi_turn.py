@@ -124,6 +124,16 @@ class RewriteWithStubModelTestCase(unittest.TestCase):
         rewriter._call_model = lambda prompt: reply
         return rewriter
 
+    def test_prompt_keeps_scope_notes_and_avoids_status_like_words(self):
+        """M1E05-3、M2E05-4：改写丢了"都算"，又把"在这些退款里"写成"退款中"，被当成状态取值。"""
+        seen = []
+        rewriter = self._rewriter("改写：无")
+        rewriter._call_model = lambda prompt: seen.append(prompt) or "改写：无"
+        rewriter.rewrite("它们的退款金额呢", CONTEXT)
+
+        self.assertIn("口径说明", seen[0])
+        self.assertIn('用"里"，不用"中"', seen[0])
+
     def test_rewrite_replaces_reference(self):
         rewriter = self._rewriter("臻品自营店15、优选旗舰店1、旗舰旗舰店7的退款金额分别是多少")
         result = rewriter.rewrite("它们的退款金额分别是多少", CONTEXT)

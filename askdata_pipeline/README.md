@@ -32,7 +32,7 @@ print(response.decision.route.value, response.answer)
 | `text2sql_pipeline.py` | 主链路编排；全量 Schema 复核、SQL 回调修正、自洽性投票、筛选值守卫都在这里接入 |
 | `dynamic_service.py` `routing.py` `data_qa.py` | 统一入口、路由判定、不查库的问答 |
 | `query_rewriter.py` | 指代消解：把"它们"改写成上一轮的具体对象 |
-| `filter_guard.py` | 筛选值守卫：问题提到的枚举取值 SQL 没用上，就带提示重规划 |
+| `filter_guard.py` | 筛选值守卫：用户自己说过的枚举取值 SQL 没用上，就带提示重规划；改写器加的取值、"也算"这类范围说明不查 |
 | `result_shape.py` | 结果检查，按顺序查：问题只要一个数、结果却有多行（两层聚合压成一层）；分组比题目要的细（数了组合、同一个维度出现好几行）；窗口函数的上一期被筛掉了；每组前 N 没截断。第一项触发就带提示重新生成一次 |
 | `conversation_service.py` | 多轮会话编排 |
 | `ecommerce_data.py` `chinook_data.py` `demo_data.py` | 三个数据集的建库与业务元数据 |

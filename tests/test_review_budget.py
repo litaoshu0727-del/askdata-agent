@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from askdata_diagnostics import Codes, collect, silenced  # noqa: E402
 from askdata_pipeline.filter_guard import DroppedFilter  # noqa: E402
 from askdata_pipeline.objects import PipelineConfig  # noqa: E402
+from askdata_pipeline.query_rewriter import RewriteResult  # noqa: E402
 from askdata_pipeline.text2sql_pipeline import AskDataText2SQLPipeline  # noqa: E402
 
 
@@ -109,7 +110,7 @@ class _DropOnce:
     def __init__(self):
         self.calls = 0
 
-    def find_dropped(self, query, sqls, scope_tables=None):
+    def find_dropped(self, query, sqls, scope_tables=None, spoken=None):
         self.calls += 1
         return [DroppedFilter(value="已支付", columns=["fact_order.order_status"])] if self.calls == 1 else []
 
@@ -164,6 +165,46 @@ class BudgetAtCallSitesTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(set(calls[1].tables), set(self.pipeline.schema_retrieval_service.tables))
 
+    def test_guard_gets_the_users_words_not_the_rewrite(self):
+        """守卫要拿到用户的原话：当前问题加历史里的用户消息，助手的回答和改写器的用词都不算。"""
+        seen = {}
+
+        class Recording:
+            def find_dropped(self, query, sqls, scope_tables=None, spoken=None):
+                seen.update(query=query, spoken=spoken)
+                return []
+
+        self.pipeline.filter_guard = Recording()
+        self.pipeline.query_rewriter.rewrite = lambda query, context: RewriteResult(
+            original=query, rewritten="质量问题的退款中，旗舰店有几家", changed=True,
+        )
+        context = "[近期对话]\n用户：质量问题的退款有多少笔\n助手：查询结果：22 笔，其中退款中 3 笔\n用户：旗舰店有几家"
+        with silenced():
+            self.pipeline.run("旗舰店有几家", conversation_context=context)
+
+        self.assertEqual(seen["query"], "质量问题的退款中，旗舰店有几家")
+        self.assertIn("质量问题的退款有多少笔", seen["spoken"])
+        self.assertIn("旗舰店有几家", seen["spoken"])
+        self.assertNotIn("退款中", seen["spoken"])
+
+    def test_replan_checks_against_the_same_words(self):
+        """重规划之后再查一次，看的还是用户的原话；否则改写器加的取值会被报成"重规划后仍未用上"。"""
+        self.pipeline.config.review_schema_char_budget = 40000
+        calls = []
+
+        class Recording(_DropOnce):
+            def find_dropped(self, query, sqls, scope_tables=None, spoken=None):
+                calls.append(spoken)
+                return super().find_dropped(query, sqls, scope_tables, spoken)
+
+        self.pipeline.filter_guard = Recording()
+        with silenced():
+            self.pipeline.run("查询总交易笔数大于50000的利率是多少")
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], calls[1])
+        self.assertIn("查询总交易笔数", calls[1])
+
     def test_guard_does_not_replan_when_nothing_fits(self):
         self.pipeline.filter_guard = _DropOnce()
         with silenced():
@@ -202,7 +243,7 @@ class GuardWiringTest(unittest.TestCase):
             seen = []
 
             class Spy:
-                def find_dropped(self, query, sqls, scope_tables=None):
+                def find_dropped(self, query, sqls, scope_tables=None, spoken=None):
                     seen.append(scope_tables)
                     return []
 
