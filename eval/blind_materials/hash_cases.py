@@ -4,7 +4,7 @@
     python eval/blind_materials/hash_cases.py snap <出题目录> <模块> <变量> <哈希文件>
     python eval/blind_materials/hash_cases.py diff <出题目录> <模块> <变量> <哈希文件> [应该变的题号,…]
 
-哈希覆盖题目的全部字段和它在 alt_sql.json 里的候选路径。原先只放在临时目录里，第九套起收进仓库。
+哈希覆盖题目的全部字段和它在 alt_sql.json 里的候选路径；多轮追问一组一个哈希，覆盖组里每一轮。原先只放在临时目录里，第九套起收进仓库。
 """
 
 from __future__ import annotations
@@ -17,13 +17,19 @@ import sys
 from pathlib import Path
 
 
+def alt_paths(case, alt: dict):
+    """多轮追问按组出哈希，alt_sql.json 却按轮记，这里把一组里每一轮的候选路径都算进去。"""
+    turns = getattr(case, "turns", None)
+    return {turn.id: alt.get(turn.id) for turn in turns} if turns else alt.get(case.id)
+
+
 def snapshot(writer_dir: Path, module: str, var: str) -> dict:
     sys.path.insert(0, str(writer_dir))
     cases = getattr(importlib.import_module(module), var)
     alt_path = writer_dir / "alt_sql.json"
     alt = json.loads(alt_path.read_text(encoding="utf-8")) if alt_path.exists() else {}
     return {
-        case.id: hashlib.sha256(json.dumps([dataclasses.asdict(case), alt.get(case.id)],
+        case.id: hashlib.sha256(json.dumps([dataclasses.asdict(case), alt_paths(case, alt)],
                                            ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         for case in cases
     }
